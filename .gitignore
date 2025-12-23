@@ -12,3 +12,9 @@ wheels/
 # output_dir
 output/
 
+# Local configuration
+.env
+
+# logs
+logs/
+*.log

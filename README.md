@@ -4,6 +4,8 @@
 
 ## 功能特性
 - **网络请求封装**：`http_client.fetch_note_page` 统一了 `requests.Session`、默认 User-Agent、超时与异常转换，所有底层网络异常都会被包装为 `RuntimeError` 并带有日志，避免泄露实现细节。
+- **批量解析与进度日志**：CLI 支持一次传入多个 URL 或通过文件批量输入，并在日志中输出 `[当前/总数]` 进度，便于大批量任务监控。
+- **可选的本地日志文件**：可通过 `--save-log` 开启日志写盘，默认写入 `logs/xhsnote_parser.log`，方便留存排障信息（可用 `--log-dir` 调整目录）。
 - **`__INITIAL_STATE__` 解析**：`note_detail.extract_note_data` 精确定位页面中的 `window.__INITIAL_STATE__` JSON，自动处理 `undefined`、时间戳格式化以及图片 traceId 提取，保证解析出的字段可直接用于业务。
 - **去水印与视频地址补全**：`note_detail.build_note_detail` 会根据图片/视频 `urlDefault` 推导出无水印地址 (`urlNoWatermark`)，并保留原始 traceId 方便排错。
 - **安全的文件命名**：CLI 端借助 `_sanitize_segment` 自动对标题、作者 ID、noteId 做非法字符替换与裁剪，生成路径形如 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json`，可避免跨平台文件名冲突。
@@ -47,11 +49,52 @@ uv run python main.py https://www.xiaohongshu.com/explore/<note_id> \
 ### 参数说明
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `url` | 必填 | 小红书笔记 URL。 |
-| `-o/--output` | `output` | JSON 根目录，将根据作者/标题自动生成子目录与文件名。 |
-| `--timeout` | `15` | HTTP 请求超时（秒），最终传递给 `requests.Session.get`。 |
-| `--user-agent` | 内置浏览器 UA | 覆盖默认 UA，便于排查被风控或模拟移动端场景。 |
-| `--log-level` | `INFO` | 日志等级，支持 `DEBUG/INFO/WARNING/ERROR`。 |
+| `urls` | 必填 | 位置参数，可提供 1..N 个小红书 URL，按输入顺序依次解析。 |
+| `-f/--input-file` | 无 | 指向 UTF-8 文本文件，每行一个 URL（支持 `#` 注释），会与位置参数合并并自动去重。 |
+| `--env-file` | `.env` | 指定额外的环境配置文件路径，默认自动查找当前目录下的 `.env`。 |
+| `-o/--output` | `output` | JSON 根目录，可在 `.env` 中通过 `XHSNOTE_OUTPUT_DIR` 预设。 |
+| `--timeout` | `15` | HTTP 请求超时（秒），同样支持 `.env` 中的 `XHSNOTE_TIMEOUT`。 |
+| `--user-agent` | 内置浏览器 UA | 覆盖默认 UA，可结合 `.env` 持久化自定义值。 |
+| `--log-level` | `INFO` | 日志等级，支持 `DEBUG/INFO/WARNING/ERROR`，亦可由 `XHSNOTE_LOG_LEVEL` 控制。 |
+| `--save-log`/`--no-save-log` | `False` | 控制是否写入日志文件，`.env` 中的 `XHSNOTE_SAVE_LOG` 可设置默认值。 |
+| `--log-dir` | `logs` | 日志目录，仅在写文件日志时生效，可使用 `XHSNOTE_LOG_DIR` 预配。 |
+
+### 使用 .env 管理默认配置
+- CLI 参数 > `.env` > 内置默认值，若命令行中未显式传入，才会回退到 `.env`。
+- 默认会读取工程根目录下的 `.env`，也可以通过 `--env-file` 指向其它路径；参考仓库附带的 `.env.example`。
+- 支持的键值：
+  - `XHSNOTE_TIMEOUT`：请求超时秒数。
+  - `XHSNOTE_USER_AGENT`：自定义 UA 字符串。
+  - `XHSNOTE_OUTPUT_DIR`：导出 JSON 根目录。
+  - `XHSNOTE_LOG_LEVEL`：`DEBUG/INFO/WARNING/ERROR` 其一。
+  - `XHSNOTE_SAVE_LOG`：`true/false`，控制是否落盘日志。
+  - `XHSNOTE_LOG_DIR`：日志文件目录。
+  - `XHSNOTE_INPUT_FILE`：需要预置的 URL 列表文件（等价于 `--input-file`）。
+- `.env` 写法示例：
+
+```dotenv
+XHSNOTE_TIMEOUT=20
+XHSNOTE_USER_AGENT="Mozilla/5.0 ..."
+XHSNOTE_OUTPUT_DIR=output
+XHSNOTE_LOG_LEVEL=INFO
+XHSNOTE_SAVE_LOG=true
+XHSNOTE_LOG_DIR=logs
+# XHSNOTE_INPUT_FILE=notes_url.txt
+```
+
+### 批量解析示例
+```bash
+# urls.txt 中每行一个链接，可穿插 # 注释或空行
+uv run python main.py https://www.xiaohongshu.com/explore/<note_a> \
+    https://www.xiaohongshu.com/explore/<note_b> \
+    -f urls.txt \
+    --log-level INFO \
+    -o batched_output
+```
+
+运行过程中会输出 `[当前/总数]` 进度与每个笔记的目标路径，失败条目会继续记录，所有任务完成后若存在失败则返回非 0 状态码。
+
+若启用 `--save-log`，日志会在控制台输出的同时写入 `logs/xhsnote_parser.log`（或指定目录），方便长时间批量任务排查。
 
 CLI 成功后会在 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json` 写出完整解析结果，包含时间戳（`time`、`lastUpdateTime`）与 `urlNoWatermark` 等精选字段。
 
@@ -96,7 +139,7 @@ print(detail["title"], detail["imageList"][0]["urlNoWatermark"])
 - **测试建议**：运行 `uv run pytest tests -q`（若存在测试）或至少执行一次真实 CLI 命令，确认 `noteDetail.json` 成功写入。
 
 ## 后续规划
-- 支持批量 URL/文件输入，并提供进度展示。
+- 支持失败重试与可配置并发度，进一步提升批量任务表现。
 - 完善 `tests/`，覆盖 `note_detail` 的异常分支及 CLI 参数矩阵。
 - 考虑新增导出选项（如单独下载图片/视频）与更丰富的日志/重试策略。
 - 考虑引入 API 服务形态（如 FastAPI/Flask），对外暴露 RESTful 接口，方便上层系统以 HTTP 方式集成。
