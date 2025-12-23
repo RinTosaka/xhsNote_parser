@@ -47,18 +47,24 @@ def _format_timestamp(ms_value: Optional[int]) -> Optional[str]:
         return None
 
 
-def _extract_trace_id(url_default: str) -> Optional[str]:
+def _extract_path(url_default: str) -> Optional[str]:
     if not url_default:
         return None
-    trace_id = url_default.rsplit("/", 1)[-1].split("!")[0]
-    return trace_id or None
+    path_prefix, trace_id = url_default.rsplit("/", 2)[1:]
+    trace_id = trace_id.split("!")[0]
+    if "_" not in path_prefix:
+        extracted_path = f"{trace_id}"
+    else:
+        extracted_path = f"{path_prefix}/{trace_id}"
+    return extracted_path or None
 
 
-def _build_nowatermark_url(trace_id: str) -> str:
-    return (
-        f"https://sns-img-hw.xhscdn.com/notes_pre_post/{trace_id}"
-        "?imageView2/2/w/0/format/jpg"
-    )
+def _build_nowatermark_imgUrl_default(extracted_path: str) -> str:
+    return f"https://sns-img-hw.xhscdn.com/{extracted_path}?imageView2/2/w/0/format/jpg"
+
+
+def _build_nowatermark_video_default(originVideoKey: str) -> str:
+    return f"https://sns-video-hw.xhscdn.com/{originVideoKey}"
 
 
 def _enrich_images(images: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -67,11 +73,25 @@ def _enrich_images(images: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not isinstance(image, dict):
             continue
         image_copy = dict(image)
-        trace_id = _extract_trace_id(image_copy.get("urlDefault", ""))
-        if trace_id:
+        extracted_path = _extract_path(image_copy.get("urlDefault", ""))
+        if extracted_path:
+            image_copy["extracted_path"] = extracted_path
+            trace_id = extracted_path.split("/")[-1]
             image_copy["traceId"] = trace_id
-            image_copy["urlNoWatermark"] = _build_nowatermark_url(trace_id)
+            image_copy["urlNoWatermark"] = _build_nowatermark_imgUrl_default(
+                extracted_path
+            )
         enriched.append(image_copy)
+    logger.debug("处理 imageList 完成，共 %d 条", len(enriched))
+    return enriched
+
+
+def _enrich_video(video: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    enriched = []
+    video_copy = dict(video)
+    originVideoKey = video_copy.get("consumer", "").get("originVideoKey", "")
+    video_copy["urlNoWatermark"] = _build_nowatermark_video_default(originVideoKey)
+    enriched.append(video_copy)
     logger.debug("处理 imageList 完成，共 %d 条", len(enriched))
     return enriched
 
@@ -80,9 +100,9 @@ def build_note_detail(note_data: Dict[str, Any], note_url: str) -> Dict[str, Any
     note_detail_map = note_data.get("noteDetailMap") or {}
     note_detail = _safe_first_note(note_detail_map)
     note_detail["imageList"] = _enrich_images(note_detail.get("imageList", []))
+    if note_detail.get("video"):
+        note_detail["video"] = _enrich_video(note_detail.get("video", []))
     note_detail["time"] = _format_timestamp(note_detail.get("time"))
-    note_detail["lastUpdateTime"] = _format_timestamp(
-        note_detail.get("lastUpdateTime")
-    )
+    note_detail["lastUpdateTime"] = _format_timestamp(note_detail.get("lastUpdateTime"))
     note_detail["noteUrl"] = note_url
     return note_detail
