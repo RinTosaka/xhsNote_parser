@@ -1,75 +1,102 @@
 # xhsNote Parser
 
-一个用于抓取并解析小红书笔记详情的轻量化工具集。项目将页面请求、JSON 解析、图片去水印处理以及数据落盘进行模块化封装，可直接通过命令行脚本使用，也可以在其他 Python 项目中以库的形式复用。
+一个专注于解析小红书图文/视频笔记详情页并导出结构化 JSON 的轻量级工具集。项目提供 Windows 友好的 CLI、可复用的 `parse_note` API 以及最小依赖（仅 `requests`），既能直接在终端使用，也能方便地嵌入到其它 Python 项目中。
 
-## 功能特点
-- **HTTP 请求模块化**：可自定义 `User-Agent`、超时与 `requests.Session`，方便注入代理、Cookie 等扩展能力。
-- **结构化数据解析**：自动从 `window.__INITIAL_STATE__` 中提取笔记数据，补充图片 `traceId` 与无水印链接，并格式化时间字段。
-- **日志与 CLI 支持**：内置日志等级控制与命令行参数解析，出错时能获得清晰的诊断信息。
-- **JSON 导出**：默认会将解析结果写入 `output/<作者昵称>_notes/{title}_{noteId}_noteDetail.json`，并可借由 `-o/--output` 指定不同的根目录。
+## 功能特性
+- **网络请求封装**：`http_client.fetch_note_page` 统一了 `requests.Session`、默认 User-Agent、超时与异常转换，所有底层网络异常都会被包装为 `RuntimeError` 并带有日志，避免泄露实现细节。
+- **`__INITIAL_STATE__` 解析**：`note_detail.extract_note_data` 精确定位页面中的 `window.__INITIAL_STATE__` JSON，自动处理 `undefined`、时间戳格式化以及图片 traceId 提取，保证解析出的字段可直接用于业务。
+- **去水印与视频地址补全**：`note_detail.build_note_detail` 会根据图片/视频 `urlDefault` 推导出无水印地址 (`urlNoWatermark`)，并保留原始 traceId 方便排错。
+- **安全的文件命名**：CLI 端借助 `_sanitize_segment` 自动对标题、作者 ID、noteId 做非法字符替换与裁剪，生成路径形如 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json`，可避免跨平台文件名冲突。
+- **可选的持久化流程**：`parse_note` 默认会调用 `storage.save_note_detail` 写入 JSON；若以库形式调用，可通过 `output_path=None` 禁止写盘，仅返回内存对象。
 
-## 环境要求
-- Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)（可先执行 `pip install uv` 获取），统一由 uv 管理依赖。
-- 依赖由 `pyproject.toml` + `uv.lock` 锁定，当前只包含 `requests`。
-
-使用 uv 同步依赖并验证环境：
-
-```bash
-uv sync
-uv run python -m pip list  # 确认环境安装成功
+## 仓库结构
+```
+xhsNote_parser/
+├── main.py                 # Windows 入口脚本，委托 xhsnote_parser.cli
+├── xhsnote_parser/
+│   ├── cli.py              # CLI 参数解析、日志开关与输出路径组织
+│   ├── http_client.py      # requests.Session 封装与默认头
+│   ├── logging_utils.py    # logging basicConfig 与等级解析
+│   ├── note_detail.py      # HTML 解析、时间格式化、去水印逻辑
+│   ├── service.py          # 业务编排 parse_note
+│   ├── storage.py          # JSON 写盘
+│   └── __init__.py         # 导出公共 API
+├── pyproject.toml / uv.lock# 仅锁定 requests 依赖
+└── output/                 # CLI 运行后的示例输出
 ```
 
-## 命令行使用
+## 环境准备
+1. 安装 Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)（`pip install uv`）。
+2. 在仓库根目录执行：
+   ```bash
+   uv sync                # 创建虚拟环境并根据 uv.lock 安装依赖
+   uv run python -m pip list  # 可选：确认虚拟环境可用
+   ```
+3. 如需在非网络环境使用，可提前配置系统代理或在运行前导出所需 Cookie/User-Agent 至环境变量，再通过 CLI 参数注入。
 
+## CLI 使用
+### 最简示例
 ```bash
-uv run python main.py <note_url> \
+uv run python main.py https://www.xiaohongshu.com/explore/<note_id> \
     --timeout 15 \
-    --user-agent "自定义 UA" \
+    --user-agent "自定义UA" \
     --log-level DEBUG \
     -o my_exports
 ```
 
-参数说明：
-- `url`：必填，小红书笔记 URL。
-- `-o / --output`：输出 JSON 根目录，默认 `output`，实际文件按 `{作者昵称}_notes/{title}_{noteId}_noteDetail.json` 组织。
-- `--timeout`：HTTP 请求超时时间（秒），默认 15。
-- `--user-agent`：覆盖默认 UA。
-- `--log-level`：日志等级，支持 `DEBUG/INFO/WARNING/ERROR`。
+### 参数说明
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `url` | 必填 | 小红书笔记 URL。 |
+| `-o/--output` | `output` | JSON 根目录，将根据作者/标题自动生成子目录与文件名。 |
+| `--timeout` | `15` | HTTP 请求超时（秒），最终传递给 `requests.Session.get`。 |
+| `--user-agent` | 内置浏览器 UA | 覆盖默认 UA，便于排查被风控或模拟移动端场景。 |
+| `--log-level` | `INFO` | 日志等级，支持 `DEBUG/INFO/WARNING/ERROR`。 |
 
-脚本运行成功后，会在指定或默认目录下生成 `{作者昵称}_notes/{title}_{noteId}_noteDetail.json`。
+CLI 成功后会在 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json` 写出完整解析结果，包含时间戳（`time`、`lastUpdateTime`）与 `urlNoWatermark` 等精选字段。
 
-## 作为库调用
+## 输出与文件命名策略
+- `_sanitize_segment` 会移除 `<>:"/\\|?*`、控制字符与路径尾部的空格/点，保证在 Windows/macOS/Linux 都能正常保存。
+- 若解析不到作者昵称/标题，将退回 `unknown_author`、`untitled`，确保 CLI 不会因为空值而异常。
+- 可手动通过 `-o` 指定一个绝对或相对路径，命令会自动创建缺失的父目录。
 
+## Python API 调用
 ```python
 from pathlib import Path
-from xhsnote_parser import parse_note, configure_logging
+from xhsnote_parser import parse_note, configure_logging, DEFAULT_TIMEOUT
 
-configure_logging()  # 可选
+configure_logging()  # 可按需传入 logging.DEBUG
 detail = parse_note(
-    "https://www.xiaohongshu.com/explore/xxx",
-    headers={"Cookie": "..."},
-    timeout=20,
-    output_path=Path("my_note.json"),
+    "https://www.xiaohongshu.com/explore/<note_id>",
+    headers={"Cookie": "...", "User-Agent": "..."},
+    timeout=DEFAULT_TIMEOUT,
+    output_path=Path("my_note.json"),  # 传 None 可跳过写盘
 )
-print(detail["title"])
+print(detail["title"], detail["imageList"][0]["urlNoWatermark"])
 ```
 
-`parse_note` 返回完整的笔记详情字典，包含图片去水印后的 `urlNoWatermark`、格式化的 `time/lastUpdateTime` 以及原笔记链接等字段。
+返回的 `detail` 字典会附加：
+- `noteUrl`：原始输入 URL（便于后续回溯）。
+- `imageList[].urlNoWatermark` / `video.urlNoWatermark`：基于 CDN 规则推导出的无水印直链。
+- `time`、`lastUpdateTime`：统一格式化为 `YYYY-mm-dd HH:MM:SS`。
 
-## 项目结构
+## 内部处理流程
+1. `cli.main` 接收命令行参数，初始化日志与目标输出路径。
+2. `service.parse_note` 调用 `http_client.fetch_note_page` 拉取 HTML，并将网络异常转换为 `RuntimeError`，由 CLI 捕获并打印中文提示。
+3. `note_detail.extract_note_data` 定位 `window.__INITIAL_STATE__`，提取 `noteDetailMap` 并选择第一条笔记。
+4. `note_detail.build_note_detail` 富化字段：图片/视频去水印、traceId、时间戳格式化、附加 `noteUrl`。
+5. `storage.save_note_detail` 以 `ensure_ascii=False` 写盘，保留原文内容。
 
-```
-xhsnote_parser/
-├── cli.py             # 命令行入口与参数解析
-├── http_client.py     # 请求封装与默认头部
-├── logging_utils.py   # 日志配置工具
-├── note_detail.py     # HTML 解析、数据补全逻辑
-├── service.py         # 对外提供的 parse_note API
-└── storage.py         # JSON 写入
-main.py               # CLI 启动脚本
-```
+了解此流程有助于在自定义脚本中插入调试逻辑或覆写 `requests.Session` 以支持代理/重试。
+
+## 调试与常见问题
+- **日志**：传入 `--log-level DEBUG` 或调用 `configure_logging(logging.DEBUG)` 可输出网络请求与解析细节。
+- **被风控/403**：多数情况下需要自备账号 Cookie，将其放入 `headers` 或 CLI 参数 `--user-agent`/`--cookie`（可通过 `envsubst` 注入）。
+- **长标题导致路径过长**：可手动使用 `-o` 将输出目录设置为较短路径，或自行修改 `_sanitize_segment` 逻辑。
+- **测试建议**：运行 `uv run pytest tests -q`（若存在测试）或至少执行一次真实 CLI 命令，确认 `noteDetail.json` 成功写入。
 
 ## 后续规划
-- 支持批量解析多条笔记。
-- 新增单元测试覆盖核心解析逻辑。
-- 提供更丰富的 CLI 选项，例如代理设置、并发下载图片等。
+- 支持批量 URL/文件输入，并提供进度展示。
+- 完善 `tests/`，覆盖 `note_detail` 的异常分支及 CLI 参数矩阵。
+- 考虑新增导出选项（如单独下载图片/视频）与更丰富的日志/重试策略。
+- 考虑引入 API 服务形态（如 FastAPI/Flask），对外暴露 RESTful 接口，方便上层系统以 HTTP 方式集成。
