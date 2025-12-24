@@ -6,6 +6,7 @@
 - **网络请求封装**：`http_client.fetch_note_page` 统一了 `requests.Session`、默认 User-Agent、超时与异常转换，所有底层网络异常都会被包装为 `RuntimeError` 并带有日志，避免泄露实现细节。
 - **批量解析与进度日志**：CLI 支持一次传入多个 URL 或通过文件批量输入，并在日志中输出 `[当前/总数]` 进度，便于大批量任务监控。
 - **可选的本地日志文件**：可通过 `--save-log` 开启日志写盘，默认写入 `logs/xhsnote_parser.log`，方便留存排障信息（可用 `--log-dir` 调整目录）。
+- **可选的 __INITIAL_STATE__ 备份**：需要排查原始 JSON 时可加上 `--save-initial-state`，在输出目录生成 `_initial_state.json` 文件与 `noteDetail` 一起保存。
 - **`__INITIAL_STATE__` 解析**：`note_detail.extract_note_data` 精确定位页面中的 `window.__INITIAL_STATE__` JSON，自动处理 `undefined`、时间戳格式化以及图片 traceId 提取，保证解析出的字段可直接用于业务。
 - **去水印与视频地址补全**：`note_detail.build_note_detail` 会根据图片/视频 `urlDefault` 推导出无水印地址 (`urlNoWatermark`)，并保留原始 traceId 方便排错。
 - **安全的文件命名**：CLI 端借助 `_sanitize_segment` 自动对标题、作者 ID、noteId 做非法字符替换与裁剪，生成路径形如 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json`，可避免跨平台文件名冲突。
@@ -57,6 +58,7 @@ uv run python main.py https://www.xiaohongshu.com/explore/<note_id> \
 | `--user-agent` | 内置浏览器 UA | 覆盖默认 UA，可结合 `.env` 持久化自定义值。 |
 | `--log-level` | `INFO` | 日志等级，支持 `DEBUG/INFO/WARNING/ERROR`，亦可由 `XHSNOTE_LOG_LEVEL` 控制。 |
 | `--save-log`/`--no-save-log` | `False` | 控制是否写入日志文件，`.env` 中的 `XHSNOTE_SAVE_LOG` 可设置默认值。 |
+| `--save-initial-state`/`--no-save-initial-state` | `False` | 控制是否额外保存 `window.__INITIAL_STATE__` 原始 JSON，`.env` 中的 `XHSNOTE_SAVE_INITIAL_STATE` 可设默认值。 |
 | `--log-dir` | `logs` | 日志目录，仅在写文件日志时生效，可使用 `XHSNOTE_LOG_DIR` 预配。 |
 
 ### 使用 .env 管理默认配置
@@ -68,6 +70,7 @@ uv run python main.py https://www.xiaohongshu.com/explore/<note_id> \
   - `XHSNOTE_OUTPUT_DIR`：导出 JSON 根目录。
   - `XHSNOTE_LOG_LEVEL`：`DEBUG/INFO/WARNING/ERROR` 其一。
   - `XHSNOTE_SAVE_LOG`：`true/false`，控制是否落盘日志。
+  - `XHSNOTE_SAVE_INITIAL_STATE`：`true/false`，决定是否默认保存 `__INITIAL_STATE__` JSON。
   - `XHSNOTE_LOG_DIR`：日志文件目录。
   - `XHSNOTE_INPUT_FILE`：需要预置的 URL 列表文件（等价于 `--input-file`）。
 - `.env` 写法示例：
@@ -96,7 +99,7 @@ uv run python main.py https://www.xiaohongshu.com/explore/<note_a> \
 
 若启用 `--save-log`，日志会在控制台输出的同时写入 `logs/xhsnote_parser.log`（或指定目录），方便长时间批量任务排查。
 
-CLI 成功后会在 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json` 写出完整解析结果，包含时间戳（`time`、`lastUpdateTime`）与 `urlNoWatermark` 等精选字段。
+CLI 成功后会在 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json` 写出完整解析结果，包含时间戳（`time`、`lastUpdateTime`）与 `urlNoWatermark` 等精选字段；若启用 `--save-initial-state`，同目录下还会额外生成 `<标题>_<noteId>_initial_state.json` 方便排查。
 
 ## 输出与文件命名策略
 - `_sanitize_segment` 会移除 `<>:"/\\|?*`、控制字符与路径尾部的空格/点，保证在 Windows/macOS/Linux 都能正常保存。

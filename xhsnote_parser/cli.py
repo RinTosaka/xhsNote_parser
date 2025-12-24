@@ -30,12 +30,14 @@ def _sanitize_segment(value: Optional[Any], fallback: str) -> str:
     return cleaned or fallback
 
 
-def _build_output_path(note_detail: Dict[str, Any], base_dir: Path) -> Path:
+def _build_output_path(
+    note_detail: Dict[str, Any], base_dir: Path, *, suffix: str = "noteDetail"
+) -> Path:
     user = note_detail.get("user") or {}
     author = _sanitize_segment(user.get("nickname"), "unknown_author")
     title = _sanitize_segment(note_detail.get("title"), "untitled")
     note_id = _sanitize_segment(note_detail.get("noteId"), "note")
-    filename = f"{title}_{note_id}_noteDetail.json"
+    filename = f"{title}_{note_id}_{suffix}.json"
     return base_dir / f"{author}_notes" / filename
 
 
@@ -251,7 +253,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=None,
         help="日志目录，默认 logs 或 .env 中的配置，仅当写文件日志时生效",
     )
-    parser.set_defaults(save_log=None)
+    parser.add_argument(
+        "--save-initial-state",
+        dest="save_initial_state",
+        action="store_true",
+        help="额外保存 window.__INITIAL_STATE__ 原始 JSON，文件位于 output/<作者>_notes/ 下，与 noteDetail 同名但后缀为 _initial_state.json",
+    )
+    parser.add_argument(
+        "--no-save-initial-state",
+        dest="save_initial_state",
+        action="store_false",
+        help="显式关闭 __INITIAL_STATE__ 写盘，优先生效",
+    )
+    parser.set_defaults(save_log=None, save_initial_state=None)
     return parser
 
 
@@ -297,6 +311,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         "XHSNOTE_LOG_DIR",
         _DEFAULT_LOG_DIR,
     )
+    save_initial_state = _resolve_bool_option(
+        args.save_initial_state,
+        env_values,
+        "XHSNOTE_SAVE_INITIAL_STATE",
+        False,
+        parser,
+    )
     output_dir = _resolve_path_option(
         args.output,
         env_values,
@@ -332,17 +353,31 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     for index, url in enumerate(urls, start=1):
         logger.info("解析进度 [%d/%d]: %s", index, total, url)
+        initial_state_holder: Dict[str, Any] = {}
+
+        def _capture_initial_state(state: Dict[str, Any]) -> None:
+            initial_state_holder["value"] = state
+
+        state_callback = _capture_initial_state if save_initial_state else None
         try:
             note_detail = parse_note(
                 url,
                 headers=headers or None,
                 timeout=timeout,
                 output_path=None,
+                on_initial_state=state_callback,
             )
             output_path = _build_output_path(note_detail, output_dir)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             save_note_detail(note_detail, output_path)
             logger.info("已保存到: %s", output_path)
+            if save_initial_state and "value" in initial_state_holder:
+                initial_state_path = _build_output_path(
+                    note_detail, output_dir, suffix="initial_state"
+                )
+                initial_state_path.parent.mkdir(parents=True, exist_ok=True)
+                save_note_detail(initial_state_holder["value"], initial_state_path)
+                logger.info("已保存 __INITIAL_STATE__ 到: %s", initial_state_path)
         except Exception as exc:  # pylint: disable=broad-except
             logger.error("解析失败 [%s]: %s", url, exc)
             failures.append(url)

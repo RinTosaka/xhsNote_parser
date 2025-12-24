@@ -2,7 +2,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ _INITIAL_STATE_PATTERN = re.compile(
 )
 
 
-def extract_note_data(html: str) -> Dict[str, Any]:
+def extract_note_data(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Extract note section from the HTML script tag."""
     match = _INITIAL_STATE_PATTERN.search(html)
     if not match:
@@ -20,7 +20,8 @@ def extract_note_data(html: str) -> Dict[str, Any]:
     raw_json = match.group(1).replace("undefined", "null")
     logger.debug("成功截取 __INITIAL_STATE__ JSON 字段，长度 %d", len(raw_json))
     full_state = json.loads(raw_json)
-    return full_state.get("note", {})
+    note_section = full_state.get("note", {})
+    return note_section, full_state
 
 
 def _safe_first_note(note_detail_map: Dict[str, Any]) -> Dict[str, Any]:
