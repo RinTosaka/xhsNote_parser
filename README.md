@@ -1,148 +1,183 @@
-# xhsNote Parser
+# xhsnote-parser
 
-一个专注于解析小红书图文/视频笔记详情页并导出结构化 JSON 的轻量级工具集。项目提供 Windows 友好的 CLI、可复用的 `parse_note` API 以及最小依赖（仅 `requests`），既能直接在终端使用，也能方便地嵌入到其它 Python 项目中。
+一个面向小红书（Xiaohongshu）笔记页面的解析工具：
 
-## 功能特性
-- **网络请求封装**：`http_client.fetch_note_page` 统一了 `requests.Session`、默认 User-Agent、超时与异常转换，所有底层网络异常都会被包装为 `RuntimeError` 并带有日志，避免泄露实现细节。
-- **批量解析与进度日志**：CLI 支持一次传入多个 URL 或通过文件批量输入，并在日志中输出 `[当前/总数]` 进度，便于大批量任务监控。
-- **可选的本地日志文件**：可通过 `--save-log` 开启日志写盘，默认写入 `logs/xhsnote_parser.log`，方便留存排障信息（可用 `--log-dir` 调整目录）。
-- **可选的 __INITIAL_STATE__ 备份**：需要排查原始 JSON 时可加上 `--save-initial-state`，在输出目录生成 `_initial_state.json` 文件与 `noteDetail` 一起保存。
-- **`__INITIAL_STATE__` 解析**：`note_detail.extract_note_data` 精确定位页面中的 `window.__INITIAL_STATE__` JSON，自动处理 `undefined`、时间戳格式化以及图片 traceId 提取，保证解析出的字段可直接用于业务。
-- **去水印与视频地址补全**：`note_detail.build_note_detail` 会根据图片/视频 `urlDefault` 推导出无水印地址 (`urlNoWatermark`)，并保留原始 traceId 方便排错。
-- **安全的文件命名**：CLI 端借助 `_sanitize_segment` 自动对标题、作者 ID、noteId 做非法字符替换与裁剪，生成路径形如 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json`，可避免跨平台文件名冲突。
-- **可选的持久化流程**：`parse_note` 默认会调用 `storage.save_note_detail` 写入 JSON；若以库形式调用，可通过 `output_path=None` 禁止写盘，仅返回内存对象。
+- 从页面 HTML 中提取 `window.__INITIAL_STATE__`
+- 解析出 `noteDetail` 并输出为 JSON
+- 额外生成图片/视频的去水印直链字段（`urlNoWatermark`）
+- 提供 Windows 友好的 CLI、FastAPI 后端，以及可选的 Web UI
 
-## 仓库结构
+> 说明：此项目仅用于学习/自用调试。目标站点可能随时变更页面结构或访问策略；请遵守当地法律法规与站点条款。
+
+## 目录结构
+
+- `main.py`：CLI 入口（委托 `xhsnote_parser.cli`）
+- `main_api.py`：API 入口（启动 `xhsnote_parser.api:app`）
+- `xhsnote_parser/`：核心解析/存储/API 代码
+- `docs/quickstart.md`：API + Web 快速开始
+- `web/`：Vite 前端（可选）
+
+## 安装（推荐 uv）
+
+要求：Python `>= 3.12`
+
+```bash
+uv sync
 ```
-xhsNote_parser/
-├── main.py                 # Windows 入口脚本，委托 xhsnote_parser.cli
-├── xhsnote_parser/
-│   ├── cli.py              # CLI 参数解析、日志开关与输出路径组织
-│   ├── http_client.py      # requests.Session 封装与默认头
-│   ├── logging_utils.py    # logging basicConfig 与等级解析
-│   ├── note_detail.py      # HTML 解析、时间格式化、去水印逻辑
-│   ├── service.py          # 业务编排 parse_note
-│   ├── storage.py          # JSON 写盘
-│   └── __init__.py         # 导出公共 API
-├── pyproject.toml / uv.lock# 仅锁定 requests 依赖
-└── output/                 # CLI 运行后的示例输出
-```
-
-## 环境准备
-1. 安装 Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)（`pip install uv`）。
-2. 在仓库根目录执行：
-   ```bash
-   uv sync                # 创建虚拟环境并根据 uv.lock 安装依赖
-   uv run python -m pip list  # 可选：确认虚拟环境可用
-   ```
-3. 如需在非网络环境使用，可提前配置系统代理或在运行前导出所需 Cookie/User-Agent 至环境变量，再通过 CLI 参数注入。
 
 ## CLI 使用
-### 最简示例
+
+解析单条笔记：
+
 ```bash
-uv run python main.py https://www.xiaohongshu.com/explore/<note_id> \
-    --timeout 15 \
-    --user-agent "自定义UA" \
-    --log-level DEBUG \
-    -o my_exports
+uv run python main.py https://www.xiaohongshu.com/explore/<note_id>
 ```
 
-### 参数说明
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `urls` | 必填 | 位置参数，可提供 1..N 个小红书 URL，按输入顺序依次解析。 |
-| `-f/--input-file` | 无 | 指向 UTF-8 文本文件，每行一个 URL（支持 `#` 注释），会与位置参数合并并自动去重。 |
-| `--env-file` | `.env` | 指定额外的环境配置文件路径，默认自动查找当前目录下的 `.env`。 |
-| `-o/--output` | `output` | JSON 根目录，可在 `.env` 中通过 `XHSNOTE_OUTPUT_DIR` 预设。 |
-| `--timeout` | `15` | HTTP 请求超时（秒），同样支持 `.env` 中的 `XHSNOTE_TIMEOUT`。 |
-| `--user-agent` | 内置浏览器 UA | 覆盖默认 UA，可结合 `.env` 持久化自定义值。 |
-| `--log-level` | `INFO` | 日志等级，支持 `DEBUG/INFO/WARNING/ERROR`，亦可由 `XHSNOTE_LOG_LEVEL` 控制。 |
-| `--save-log`/`--no-save-log` | `False` | 控制是否写入日志文件，`.env` 中的 `XHSNOTE_SAVE_LOG` 可设置默认值。 |
-| `--save-initial-state`/`--no-save-initial-state` | `False` | 控制是否额外保存 `window.__INITIAL_STATE__` 原始 JSON，`.env` 中的 `XHSNOTE_SAVE_INITIAL_STATE` 可设默认值。 |
-| `--log-dir` | `logs` | 日志目录，仅在写文件日志时生效，可使用 `XHSNOTE_LOG_DIR` 预配。 |
+查看 CLI 帮助（等价入口）：
 
-### 使用 .env 管理默认配置
-- CLI 参数 > `.env` > 内置默认值，若命令行中未显式传入，才会回退到 `.env`。
-- 默认会读取工程根目录下的 `.env`，也可以通过 `--env-file` 指向其它路径；参考仓库附带的 `.env.example`。
-- 支持的键值：
-  - `XHSNOTE_TIMEOUT`：请求超时秒数。
-  - `XHSNOTE_USER_AGENT`：自定义 UA 字符串。
-  - `XHSNOTE_OUTPUT_DIR`：导出 JSON 根目录。
-  - `XHSNOTE_LOG_LEVEL`：`DEBUG/INFO/WARNING/ERROR` 其一。
-  - `XHSNOTE_SAVE_LOG`：`true/false`，控制是否落盘日志。
-  - `XHSNOTE_SAVE_INITIAL_STATE`：`true/false`，决定是否默认保存 `__INITIAL_STATE__` JSON。
-  - `XHSNOTE_LOG_DIR`：日志文件目录。
-  - `XHSNOTE_INPUT_FILE`：需要预置的 URL 列表文件（等价于 `--input-file`）。
-- `.env` 写法示例：
-
-```dotenv
-XHSNOTE_TIMEOUT=20
-XHSNOTE_USER_AGENT="Mozilla/5.0 ..."
-XHSNOTE_OUTPUT_DIR=output
-XHSNOTE_LOG_LEVEL=INFO
-XHSNOTE_SAVE_LOG=true
-XHSNOTE_LOG_DIR=logs
-# XHSNOTE_INPUT_FILE=notes_url.txt
-```
-
-### 批量解析示例
 ```bash
-# urls.txt 中每行一个链接，可穿插 # 注释或空行
-uv run python main.py https://www.xiaohongshu.com/explore/<note_a> \
-    https://www.xiaohongshu.com/explore/<note_b> \
-    -f urls.txt \
-    --log-level INFO \
-    -o batched_output
+uv run python -m xhsnote_parser.cli --help
 ```
 
-运行过程中会输出 `[当前/总数]` 进度与每个笔记的目标路径，失败条目会继续记录，所有任务完成后若存在失败则返回非 0 状态码。
+解析多条（命令行直接传多个 URL）：
 
-若启用 `--save-log`，日志会在控制台输出的同时写入 `logs/xhsnote_parser.log`（或指定目录），方便长时间批量任务排查。
-
-CLI 成功后会在 `output/<作者>_notes/<标题>_<noteId>_noteDetail.json` 写出完整解析结果，包含时间戳（`time`、`lastUpdateTime`）与 `urlNoWatermark` 等精选字段；若启用 `--save-initial-state`，同目录下还会额外生成 `<标题>_<noteId>_initial_state.json` 方便排查。
-
-## 输出与文件命名策略
-- `_sanitize_segment` 会移除 `<>:"/\\|?*`、控制字符与路径尾部的空格/点，保证在 Windows/macOS/Linux 都能正常保存。
-- 若解析不到作者昵称/标题，将退回 `unknown_author`、`untitled`，确保 CLI 不会因为空值而异常。
-- 可手动通过 `-o` 指定一个绝对或相对路径，命令会自动创建缺失的父目录。
-
-## Python API 调用
-```python
-from pathlib import Path
-from xhsnote_parser import parse_note, configure_logging, DEFAULT_TIMEOUT
-
-configure_logging()  # 可按需传入 logging.DEBUG
-detail = parse_note(
-    "https://www.xiaohongshu.com/explore/<note_id>",
-    headers={"Cookie": "...", "User-Agent": "..."},
-    timeout=DEFAULT_TIMEOUT,
-    output_path=Path("my_note.json"),  # 传 None 可跳过写盘
-)
-print(detail["title"], detail["imageList"][0]["urlNoWatermark"])
+```bash
+uv run python main.py https://www.xiaohongshu.com/explore/1 https://www.xiaohongshu.com/explore/2
 ```
 
-返回的 `detail` 字典会附加：
-- `noteUrl`：原始输入 URL（便于后续回溯）。
-- `imageList[].urlNoWatermark` / `video.urlNoWatermark`：基于 CDN 规则推导出的无水印直链。
-- `time`、`lastUpdateTime`：统一格式化为 `YYYY-mm-dd HH:MM:SS`。
+从文件读取 URL（支持空行与 `#` 注释）：
 
-## 内部处理流程
-1. `cli.main` 接收命令行参数，初始化日志与目标输出路径。
-2. `service.parse_note` 调用 `http_client.fetch_note_page` 拉取 HTML，并将网络异常转换为 `RuntimeError`，由 CLI 捕获并打印中文提示。
-3. `note_detail.extract_note_data` 定位 `window.__INITIAL_STATE__`，提取 `noteDetailMap` 并选择第一条笔记。
-4. `note_detail.build_note_detail` 富化字段：图片/视频去水印、traceId、时间戳格式化、附加 `noteUrl`。
-5. `storage.save_note_detail` 以 `ensure_ascii=False` 写盘，保留原文内容。
+```bash
+uv run python main.py -f notes_url.txt
+```
 
-了解此流程有助于在自定义脚本中插入调试逻辑或覆写 `requests.Session` 以支持代理/重试。
+常用参数：
 
-## 调试与常见问题
-- **日志**：传入 `--log-level DEBUG` 或调用 `configure_logging(logging.DEBUG)` 可输出网络请求与解析细节。
-- **被风控/403**：多数情况下需要自备账号 Cookie，将其放入 `headers` 或 CLI 参数 `--user-agent`/`--cookie`（可通过 `envsubst` 注入）。
-- **长标题导致路径过长**：可手动使用 `-o` 将输出目录设置为较短路径，或自行修改 `_sanitize_segment` 逻辑。
-- **测试建议**：运行 `uv run pytest tests -q`（若存在测试）或至少执行一次真实 CLI 命令，确认 `noteDetail.json` 成功写入。
+```bash
+uv run python main.py https://www.xiaohongshu.com/explore/<note_id> --timeout 20 --user-agent "Mozilla/5.0 ..." --log-level DEBUG --save-log --log-dir logs --save-initial-state -o output
+```
 
-## 后续规划
-- 支持失败重试与可配置并发度，进一步提升批量任务表现。
-- 完善 `tests/`，覆盖 `note_detail` 的异常分支及 CLI 参数矩阵。
-- 考虑新增导出选项（如单独下载图片/视频）与更丰富的日志/重试策略。
-- 考虑引入 API 服务形态（如 FastAPI/Flask），对外暴露 RESTful 接口，方便上层系统以 HTTP 方式集成。
+### CLI 配置（.env 文件）
+
+CLI 支持通过 `.env`（默认读取当前目录的 `.env`）或 `--env-file` 覆盖配置：
+
+```bash
+uv run python main.py --env-file .env -f notes_url.txt
+```
+
+可用键（见 `.env.example`）：
+
+- `XHSNOTE_TIMEOUT`
+- `XHSNOTE_USER_AGENT`
+- `XHSNOTE_OUTPUT_DIR`
+- `XHSNOTE_LOG_LEVEL`
+- `XHSNOTE_SAVE_LOG`
+- `XHSNOTE_LOG_DIR`
+- `XHSNOTE_INPUT_FILE`
+
+## API（FastAPI）
+
+启动后端：
+
+```bash
+uv sync
+uv run python main_api.py
+```
+
+默认监听：`http://127.0.0.1:8000`
+
+主要接口：
+
+- `GET /api/health`
+- `POST /api/parse`
+- `POST /api/parse/batch`
+- `GET /api/outputs`
+- `GET /api/outputs/{relative_path}`
+
+### PowerShell 调用示例
+
+单条解析：
+
+```powershell
+$body = @{
+  url = "https://www.xiaohongshu.com/explore/<note_id>"
+  options = @{
+    timeout = 20
+    user_agent = "Mozilla/5.0 ..."
+    cookie = "a=1; b=2"   # 可选：需要登录/反爬时使用
+    save = $true
+    save_initial_state = $false
+    include_initial_state = $false
+  }
+} | ConvertTo-Json -Depth 6
+
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/parse" -ContentType "application/json" -Body $body
+```
+
+批量解析：
+
+```powershell
+$body = @{
+  urls = @(
+    "https://www.xiaohongshu.com/explore/1",
+    "https://www.xiaohongshu.com/explore/2"
+  )
+  concurrency = 3
+  dedupe = $true
+  options = @{ save = $true }
+} | ConvertTo-Json -Depth 6
+
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/parse/batch" -ContentType "application/json" -Body $body
+```
+
+### API 环境变量
+
+API 从进程环境变量读取配置（不会自动加载 `.env`）。见 `.env.example`：
+
+- `XHSNOTE_TIMEOUT`
+- `XHSNOTE_OUTPUT_DIR`
+- `XHSNOTE_LOG_LEVEL`
+- `XHSNOTE_SAVE_LOG`
+- `XHSNOTE_LOG_DIR`
+- `XHSNOTE_API_HOST`
+- `XHSNOTE_API_PORT`
+- `XHSNOTE_API_RELOAD`
+- `XHSNOTE_API_CORS_ORIGINS`（逗号分隔；或 `*` 允许所有来源）
+- `XHSNOTE_API_ENABLE_STATIC`（是否挂载静态站点）
+- `XHSNOTE_API_STATIC_DIR`（静态目录，默认 `web/dist`）
+
+## Web UI（可选）
+
+见 `docs/quickstart.md`。
+
+开发模式：
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+默认前端请求后端：`http://127.0.0.1:8000`；可通过 `web/.env` 设置 `VITE_API_BASE` 覆盖。
+
+生产构建后（`web/dist` 存在且启用静态服务），FastAPI 会把前端挂载在 `/`。
+
+## 输出说明
+
+默认输出目录：`output/`（可通过 CLI `-o/--output` 或 `XHSNOTE_OUTPUT_DIR` 调整）。
+
+输出文件名规则（大致）：
+
+- `output/<author>_notes/<title>_<noteId>_noteDetail.json`
+- `output/<author>_notes/<title>_<noteId>_initial_state.json`（开启保存时）
+
+## 常见问题
+
+- **403 / 需要登录**：尝试设置 `User-Agent`；API 可在 `options.cookie` 传入 Cookie（注意不要把 Cookie 写入仓库）。
+- **提示找不到 `window.__INITIAL_STATE__`**：页面结构可能变更或返回了非笔记 HTML（如风控/跳转页）；建议打开 `--log-level DEBUG` 并抓取返回内容排查。
+
+## 开发与测试
+
+```bash
+uv run pytest -q
+```
