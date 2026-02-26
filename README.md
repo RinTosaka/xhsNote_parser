@@ -181,3 +181,118 @@ npm run dev
 ```bash
 uv run pytest -q
 ```
+
+## 部署到服务器（Linux 示例）
+
+下面以「后端 API +（可选）Web UI」为目标，给出一套最小可用的部署方式。生产环境建议使用反向代理（Nginx/Caddy）并关闭热重载。
+
+### 1）准备环境
+
+- Python `>=3.12`
+- Node.js（仅在需要构建 `web/` 时需要）
+- `uv`（推荐）
+
+```bash
+# 安装/更新依赖（在项目目录）
+uv sync
+```
+
+### 2）配置环境变量
+
+API 不会自动加载 `.env` 文件（只读取进程环境变量），生产环境建议通过 systemd 的 `EnvironmentFile` 或导出环境变量注入。
+
+关键变量（见 `.env.example`）：
+
+- `XHSNOTE_OUTPUT_DIR`：输出目录（建议指向持久化路径）
+- `XHSNOTE_TIMEOUT`：请求超时
+- `XHSNOTE_SAVE_LOG` / `XHSNOTE_LOG_DIR`：日志开关与目录
+- `XHSNOTE_API_HOST`：生产环境通常用 `0.0.0.0`
+- `XHSNOTE_API_PORT`：端口
+- `XHSNOTE_API_RELOAD`：生产环境建议 `false`
+- `XHSNOTE_API_CORS_ORIGINS`：前端域名白名单（逗号分隔；或 `*`）
+- `XHSNOTE_API_ENABLE_STATIC` / `XHSNOTE_API_STATIC_DIR`：是否挂载静态站点（`web/dist`）
+
+> 如需 Cookie / UA，请通过环境变量/部署配置注入，避免写入仓库。
+
+### 3）启动后端（不含 Web UI）
+
+```bash
+export XHSNOTE_API_HOST=0.0.0.0
+export XHSNOTE_API_PORT=8000
+export XHSNOTE_API_RELOAD=false
+uv run python main_api.py
+```
+
+验证：
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+### 4）（可选）构建并部署 Web UI（由后端静态托管）
+
+在服务器上构建：
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+然后确保：
+
+- `web/dist` 存在
+- `XHSNOTE_API_ENABLE_STATIC=true`（或不设置，默认开启）
+- `XHSNOTE_API_STATIC_DIR` 不设置时默认指向 `web/dist`
+
+此时 FastAPI 会把静态站点挂载在 `/`，API 仍在 `/api/*`。
+
+### 5）systemd 守护（推荐）
+
+示例：`/etc/systemd/system/xhsnote-parser.service`
+
+```ini
+[Unit]
+Description=xhsnote-parser API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/xhsnote-parser
+EnvironmentFile=/opt/xhsnote-parser/.env
+ExecStart=/usr/bin/env uv run python main_api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用并启动：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now xhsnote-parser
+sudo systemctl status xhsnote-parser
+```
+
+### 6）Nginx 反向代理（示例）
+
+将外网 `80/443` 转发到本机 `8000`：
+
+```nginx
+server {
+  listen 80;
+  server_name your.domain.com;
+
+  location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+```
+
+如果前端与后端分开部署（不同域名/端口），前端构建时可在 `web/.env` 设置 `VITE_API_BASE` 指向后端的 `/api` 根路径，并同步配置 `XHSNOTE_API_CORS_ORIGINS`。
