@@ -107,7 +107,6 @@ $body = @{
     cookie = "a=1; b=2"   # 可选：需要登录/反爬时使用
     save = $true
     save_initial_state = $false
-    include_initial_state = $false
   }
 } | ConvertTo-Json -Depth 6
 

@@ -5,8 +5,8 @@ import pytest
 from xhsnote_parser import cli
 
 
-def test_collect_input_urls_merges_cli_and_file(tmp_path: Path) -> None:
-    file_path = tmp_path / "urls.txt"
+def test_collect_input_urls_merges_cli_and_file(sandbox_tmp_path: Path) -> None:
+    file_path = sandbox_tmp_path / "urls.txt"
     file_path.write_text(
         "https://www.xiaohongshu.com/explore/1\n"
         "# comment line\n"
@@ -31,8 +31,8 @@ def test_collect_input_urls_merges_cli_and_file(tmp_path: Path) -> None:
     ]
 
 
-def test_collect_input_urls_missing_file(tmp_path: Path) -> None:
-    missing_path = tmp_path / "missing.txt"
+def test_collect_input_urls_missing_file(sandbox_tmp_path: Path) -> None:
+    missing_path = sandbox_tmp_path / "missing.txt"
 
     with pytest.raises(ValueError) as excinfo:
         cli._collect_input_urls([], missing_path)

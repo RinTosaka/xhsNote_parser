@@ -18,10 +18,6 @@ class ParseOptions(BaseModel):
     save_initial_state: bool = Field(
         default=False, description="Persist window.__INITIAL_STATE__ JSON on disk."
     )
-    include_initial_state: bool = Field(
-        default=False, description="Include window.__INITIAL_STATE__ in response."
-    )
-
 
 class ParseRequest(BaseModel):
     url: str = Field(..., description="Xiaohongshu note URL.")

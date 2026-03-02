@@ -19,6 +19,15 @@ output/
 logs/
 *.log
 
+# Test artifacts / caches
+.pytest_cache/
+.tmp/
+tests/.tmp/
+pytest-cache-files-*/
+
+# Editor settings
+.vscode/
+
 # Frontend
 web/node_modules/
 web/dist/

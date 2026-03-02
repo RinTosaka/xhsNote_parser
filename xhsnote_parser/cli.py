@@ -2,9 +2,11 @@ import argparse
 import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import urlparse
 
 from .http_client import DEFAULT_TIMEOUT
 from .logging_utils import configure_logging, resolve_log_level
+from .note_detail import build_note_stub_from_initial_state
 from .service import parse_note
 from .storage import save_note_detail
 
@@ -13,6 +15,18 @@ _INVALID_FILENAME_CHARS = set('<>:"/\\|?*')
 _DEFAULT_OUTPUT_DIR = Path("output")
 _DEFAULT_LOG_DIR = Path("logs")
 _DEFAULT_ENV_PATH = Path(".env")
+
+
+def _extract_note_id_from_url(url: str) -> Optional[str]:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    path = (parsed.path or "").rstrip("/")
+    if not path:
+        return None
+    candidate = path.split("/")[-1].strip()
+    return candidate or None
 
 
 def _sanitize_segment(value: Optional[Any], fallback: str) -> str:
@@ -192,9 +206,7 @@ def _resolve_optional_path(
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="解析小红书笔记并输出 noteDetail.json"
-    )
+    parser = argparse.ArgumentParser(description="解析小红书笔记并输出 noteDetail.json")
     parser.add_argument(
         "urls",
         nargs="*",
@@ -357,6 +369,22 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         def _capture_initial_state(state: Dict[str, Any]) -> None:
             initial_state_holder["value"] = state
+            if "saved_path" in initial_state_holder:
+                return
+            note_stub = build_note_stub_from_initial_state(state)
+            if not note_stub.get("noteId"):
+                note_stub["noteId"] = _extract_note_id_from_url(url) or f"idx_{index}"
+            initial_state_path = _build_output_path(
+                note_stub, output_dir, suffix="initial_state"
+            )
+            initial_state_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                save_note_detail(state, initial_state_path)
+            except OSError as exc:
+                logger.error("保存 __INITIAL_STATE__ 失败: %s", exc)
+                return
+            initial_state_holder["saved_path"] = initial_state_path
+            logger.info("已保存 __INITIAL_STATE__ 到: %s", initial_state_path)
 
         state_callback = _capture_initial_state if save_initial_state else None
         try:
@@ -372,12 +400,28 @@ def main(argv: Optional[List[str]] = None) -> None:
             save_note_detail(note_detail, output_path)
             logger.info("已保存到: %s", output_path)
             if save_initial_state and "value" in initial_state_holder:
-                initial_state_path = _build_output_path(
+                desired_path = _build_output_path(
                     note_detail, output_dir, suffix="initial_state"
                 )
-                initial_state_path.parent.mkdir(parents=True, exist_ok=True)
-                save_note_detail(initial_state_holder["value"], initial_state_path)
-                logger.info("已保存 __INITIAL_STATE__ 到: %s", initial_state_path)
+                saved_path = initial_state_holder.get("saved_path")
+                if not (isinstance(saved_path, Path) and saved_path == desired_path):
+                    desired_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        if isinstance(saved_path, Path) and saved_path.exists():
+                            if not desired_path.exists():
+                                saved_path.replace(desired_path)
+                            else:
+                                save_note_detail(
+                                    initial_state_holder["value"], desired_path
+                                )
+                                saved_path.unlink(missing_ok=True)
+                        else:
+                            save_note_detail(initial_state_holder["value"], desired_path)
+                    except OSError as exc:
+                        logger.error("保存 __INITIAL_STATE__ 失败: %s", exc)
+                    else:
+                        initial_state_holder["saved_path"] = desired_path
+                        logger.info("已保存 __INITIAL_STATE__ 到: %s", desired_path)
         except Exception as exc:  # pylint: disable=broad-except
             logger.error("解析失败 [%s]: %s", url, exc)
             failures.append(url)

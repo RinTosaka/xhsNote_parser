@@ -5,15 +5,17 @@ import json
 import logging
 import os
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+import requests
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api_models import (
@@ -31,6 +33,7 @@ from .api_models import (
 )
 from .api_utils import build_output_path, list_outputs, safe_resolve
 from .logging_utils import configure_logging, resolve_log_level
+from .note_detail import build_note_stub_from_initial_state
 from .service import parse_note
 from .storage import save_note_detail
 
@@ -54,6 +57,37 @@ class ParseFailure(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+def _extract_note_id_from_url(url: str) -> Optional[str]:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    path = (parsed.path or "").rstrip("/")
+    if not path:
+        return None
+    candidate = path.split("/")[-1].strip()
+    return candidate or None
+
+
+_ALLOWED_MEDIA_SUFFIXES = (".xhscdn.com", ".xhscdn.net")
+
+
+def _normalize_media_url(url: str) -> str:
+    cleaned = url.strip()
+    if cleaned.startswith("//"):
+        return f"https:{cleaned}"
+    return cleaned
+
+
+def _is_allowed_media_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    lowered = host.lower()
+    return any(
+        lowered == suffix[1:] or lowered.endswith(suffix) for suffix in _ALLOWED_MEDIA_SUFFIXES
+    )
 
 
 def _env_str(key: str, default: str) -> str:
@@ -104,9 +138,7 @@ def _resolve_log_level(default: int = logging.INFO) -> int:
 def load_settings() -> ApiSettings:
     default_timeout = _env_int("XHSNOTE_TIMEOUT", 15)
     output_dir = Path(_env_str("XHSNOTE_OUTPUT_DIR", "output")).expanduser()
-    cors_origins = _env_list(
-        "XHSNOTE_API_CORS_ORIGINS", ["http://localhost:5173"]
-    )
+    cors_origins = _env_list("XHSNOTE_API_CORS_ORIGINS", ["http://localhost:5173"])
     allow_all_origins = cors_origins == ["*"]
     save_log = _env_bool("XHSNOTE_SAVE_LOG", False)
     log_dir_raw = os.getenv("XHSNOTE_LOG_DIR")
@@ -148,8 +180,24 @@ def _parse_note_sync(
 
     def _capture(state: Dict[str, Any]) -> None:
         initial_state_holder["value"] = state
+        if "saved_path" in initial_state_holder:
+            return
+        note_stub = build_note_stub_from_initial_state(state)
+        if not note_stub.get("noteId"):
+            fallback = _extract_note_id_from_url(url) or f"ts_{int(time.time() * 1000)}"
+            note_stub["noteId"] = fallback
+        initial_state_path = build_output_path(
+            note_stub, settings.output_dir, suffix="initial_state"
+        )
+        initial_state_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            save_note_detail(state, initial_state_path)
+        except OSError as exc:
+            logger.warning("保存 __INITIAL_STATE__ 失败: %s", exc)
+            return
+        initial_state_holder["saved_path"] = initial_state_path
 
-    capture_state = options.include_initial_state or options.save_initial_state
+    capture_state = options.save_initial_state
     timeout = options.timeout or settings.default_timeout
     headers = _build_headers(options)
     try:
@@ -175,24 +223,38 @@ def _parse_note_sync(
         saved_paths = SavedPaths(note_detail=str(output_path))
 
     if options.save_initial_state and "value" in initial_state_holder:
-        initial_state_path = build_output_path(
+        desired_path = build_output_path(
             note_detail, settings.output_dir, suffix="initial_state"
         )
-        initial_state_path.parent.mkdir(parents=True, exist_ok=True)
-        save_note_detail(initial_state_holder["value"], initial_state_path)
-        if saved_paths is None:
-            saved_paths = SavedPaths(initial_state=str(initial_state_path))
-        else:
-            saved_paths.initial_state = str(initial_state_path)
+        saved_path = initial_state_holder.get("saved_path")
+        if not (isinstance(saved_path, Path) and saved_path == desired_path):
+            desired_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if isinstance(saved_path, Path) and saved_path.exists():
+                    if not desired_path.exists():
+                        saved_path.replace(desired_path)
+                    else:
+                        save_note_detail(initial_state_holder["value"], desired_path)
+                        saved_path.unlink(missing_ok=True)
+                else:
+                    save_note_detail(initial_state_holder["value"], desired_path)
+            except OSError as exc:
+                logger.warning("保存 __INITIAL_STATE__ 失败: %s", exc)
+            else:
+                initial_state_holder["saved_path"] = desired_path
+        initial_state_path = initial_state_holder.get("saved_path")
+        if isinstance(initial_state_path, Path):
+            if saved_paths is None:
+                saved_paths = SavedPaths(initial_state=str(initial_state_path))
+            else:
+                saved_paths.initial_state = str(initial_state_path)
 
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     return ParseResponse(
         url=url,
         note=note_detail,
         saved=saved_paths,
-        initial_state=initial_state_holder.get("value")
-        if options.include_initial_state
-        else None,
+        initial_state=initial_state_holder.get("value"),
         elapsed_ms=elapsed_ms,
     )
 
@@ -243,6 +305,69 @@ def create_app() -> FastAPI:
             log_dir=str(settings.log_dir) if settings.log_dir else None,
         )
 
+    @app.get("/api/media")
+    async def media_proxy(request: Request, url: str) -> StreamingResponse:
+        """代理 xhscdn 媒体资源，避免前端直连遇到混合内容/防盗链限制。"""
+
+        if not url or len(url) > 4096:
+            raise HTTPException(status_code=400, detail="Invalid url.")
+
+        normalized = _normalize_media_url(url)
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"http", "https"}:
+            raise HTTPException(
+                status_code=400, detail="Only http(s) URLs are allowed."
+            )
+        if not _is_allowed_media_host(parsed.hostname):
+            raise HTTPException(status_code=400, detail="Media host is not allowed.")
+
+        upstream_headers: Dict[str, str] = {
+            "User-Agent": request.headers.get("user-agent", "Mozilla/5.0"),
+            "Referer": "https://www.xiaohongshu.com/",
+        }
+        range_header = request.headers.get("range")
+        if range_header:
+            upstream_headers["Range"] = range_header
+
+        try:
+            upstream = requests.get(
+                normalized,
+                headers=upstream_headers,
+                stream=True,
+                timeout=settings.default_timeout,
+                allow_redirects=True,
+            )
+        except requests.RequestException as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Upstream fetch failed: {exc}"
+            ) from exc
+
+        def iter_bytes():
+            try:
+                for chunk in upstream.iter_content(chunk_size=256 * 1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        passthrough_headers: Dict[str, str] = {}
+        for key in [
+            "content-type",
+            "content-length",
+            "content-range",
+            "accept-ranges",
+        ]:
+            value = upstream.headers.get(key)
+            if value:
+                passthrough_headers[key] = value
+
+        return StreamingResponse(
+            iter_bytes(),
+            status_code=upstream.status_code,
+            headers=passthrough_headers,
+            media_type=upstream.headers.get("content-type"),
+        )
+
     @app.post("/api/parse", response_model=ParseResponse)
     async def parse_single(payload: ParseRequest) -> ParseResponse:
         url = payload.url.strip()
@@ -256,7 +381,9 @@ def create_app() -> FastAPI:
                 settings=settings,
             )
         except ParseFailure as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.message
+            ) from exc
 
     @app.post("/api/parse/batch", response_model=BatchResponse)
     async def parse_batch(payload: BatchParseRequest) -> BatchResponse:
@@ -320,10 +447,14 @@ def create_app() -> FastAPI:
             return JSONResponse(content=json.loads(content))
         except Exception as exc:
             logger.exception("Failed to read output file: %s", exc)
-            raise HTTPException(status_code=500, detail="Failed to read output file.") from exc
+            raise HTTPException(
+                status_code=500, detail="Failed to read output file."
+            ) from exc
 
     if settings.static_dir:
-        app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="static")
+        app.mount(
+            "/", StaticFiles(directory=settings.static_dir, html=True), name="static"
+        )
 
     return app
 

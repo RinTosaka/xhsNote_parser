@@ -4,7 +4,6 @@ export type ParseOptions = {
   cookie?: string;
   save?: boolean;
   save_initial_state?: boolean;
-  include_initial_state?: boolean;
 };
 
 export type ParseRequest = {

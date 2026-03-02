@@ -6,7 +6,7 @@ import type {
   ParseResponse,
 } from "./types";
 
-const API_BASE =
+export const API_BASE =
   (import.meta.env.VITE_API_BASE as string | undefined) ?? "/api";
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {

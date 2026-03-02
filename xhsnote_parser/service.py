@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -6,6 +7,8 @@ import requests
 from .http_client import DEFAULT_TIMEOUT, fetch_note_page
 from .note_detail import build_note_detail, extract_note_data
 from .storage import save_note_detail
+
+logger = logging.getLogger(__name__)
 
 
 def parse_note(
@@ -20,7 +23,10 @@ def parse_note(
     html = fetch_note_page(url, headers=headers, timeout=timeout, session=session)
     note_data, initial_state = extract_note_data(html)
     if on_initial_state is not None:
-        on_initial_state(initial_state)
+        try:
+            on_initial_state(initial_state)
+        except Exception as exc:  # pragma: no cover - 防御性处理
+            logger.warning("on_initial_state 回调执行失败: %s", exc, exc_info=True)
     note_detail = build_note_detail(note_data, url)
     if output_path:
         save_note_detail(note_detail, output_path)
