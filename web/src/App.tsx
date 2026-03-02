@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchOutputs, parseBatch, parseSingle } from "./api";
+import { API_BASE, fetchOutputs, parseBatch, parseSingle } from "./api";
 import type {
   BatchItem,
   OutputItem,
@@ -25,6 +25,8 @@ type PreviewItem = {
   url: string;
   poster?: string;
   title: string;
+  loop?: boolean;
+  muted?: boolean;
 };
 
 const HISTORY_KEY = "xhsnote.history";
@@ -63,22 +65,76 @@ const parseList = (raw: string) =>
 const EXAMPLE_URL =
   "https://www.xiaohongshu.com/explore/6971ebf3000000002202076e?xsec_token=AB7yCpkwh6ZRTGkPFLvJcq_9_L0Nri570NCfUkPUFPCl8=&xsec_source=pc_user";
 
+const normalizeMediaUrl = (url: string): string => {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("//")) {
+    return `https:${trimmed}`;
+  }
+  if (trimmed.startsWith("http://")) {
+    return `https://${trimmed.slice("http://".length)}`;
+  }
+  return trimmed;
+};
+
+const normalizeProxyTargetUrl = (url: string): string => {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("//")) {
+    return `https:${trimmed}`;
+  }
+  return trimmed;
+};
+
+const toMediaProxyUrl = (url: string): string =>
+  `${API_BASE}/media?url=${encodeURIComponent(normalizeProxyTargetUrl(url))}`;
+
 const getCoverUrl = (note: Record<string, any>, images: any[]) =>
-  note?.cover?.urlNoWatermark ||
-  note?.cover?.urlDefault ||
-  note?.cover?.url ||
-  images?.[0]?.urlNoWatermark ||
-  images?.[0]?.urlDefault ||
-  images?.[0]?.url ||
-  "";
+  normalizeMediaUrl(
+    note?.cover?.urlNoWatermark ||
+      note?.cover?.urlDefault ||
+      note?.cover?.url ||
+      images?.[0]?.urlNoWatermark ||
+      images?.[0]?.urlDefault ||
+      images?.[0]?.url ||
+      ""
+  );
 
 const getImageUrl = (image: any) =>
-  image?.urlNoWatermark || image?.urlDefault || image?.url || "";
+  normalizeMediaUrl(image?.urlNoWatermark || image?.urlDefault || image?.url || "");
 
 const extractLiveUrl = (image: any) => {
   if (!image || typeof image !== "object") {
     return null;
   }
+  const extractFromStream = (stream: any) => {
+    if (!stream || typeof stream !== "object") {
+      return null;
+    }
+    for (const key of ["h264", "h265", "av1", "h266"]) {
+      const entries = stream[key];
+      if (!Array.isArray(entries) || !entries.length) {
+        continue;
+      }
+      const first = entries[0];
+      if (!first || typeof first !== "object") {
+        continue;
+      }
+      if (typeof first.masterUrl === "string" && first.masterUrl) {
+        return normalizeProxyTargetUrl(first.masterUrl);
+      }
+      const backups = first.backupUrls;
+      if (Array.isArray(backups) && typeof backups[0] === "string" && backups[0]) {
+        return normalizeProxyTargetUrl(backups[0]);
+      }
+    }
+    return null;
+  };
+
   const directKeys = [
     "livePhotoUrl",
     "livePhotoURL",
@@ -88,7 +144,7 @@ const extractLiveUrl = (image: any) => {
   ];
   for (const key of directKeys) {
     if (typeof image[key] === "string" && image[key]) {
-      return image[key];
+      return normalizeProxyTargetUrl(image[key]);
     }
   }
   if (image.livePhoto && typeof image.livePhoto === "object") {
@@ -102,7 +158,7 @@ const extractLiveUrl = (image: any) => {
     ];
     for (const candidate of candidates) {
       if (typeof candidate === "string" && candidate) {
-        return candidate;
+        return normalizeProxyTargetUrl(candidate);
       }
     }
   }
@@ -114,8 +170,14 @@ const extractLiveUrl = (image: any) => {
     ];
     for (const candidate of candidates) {
       if (typeof candidate === "string" && candidate) {
-        return candidate;
+        return normalizeProxyTargetUrl(candidate);
       }
+    }
+  }
+  if (image.stream && typeof image.stream === "object") {
+    const streamUrl = extractFromStream(image.stream);
+    if (streamUrl) {
+      return streamUrl;
     }
   }
   return null;
@@ -189,6 +251,92 @@ const inferImageExtension = (contentType: string | null, url: string) => {
   return "jpg";
 };
 
+const extractVideoUrl = (video: any): string => {
+  if (!video) {
+    return "";
+  }
+
+  const extractFromStream = (stream: any) => {
+    if (!stream || typeof stream !== "object") {
+      return "";
+    }
+    for (const key of ["h264", "h265", "av1", "h266"]) {
+      const entries = stream[key];
+      if (!Array.isArray(entries) || !entries.length) {
+        continue;
+      }
+      const first = entries[0];
+      if (!first || typeof first !== "object") {
+        continue;
+      }
+      if (typeof first.masterUrl === "string" && first.masterUrl) {
+        return normalizeProxyTargetUrl(first.masterUrl);
+      }
+      const backups = first.backupUrls;
+      if (Array.isArray(backups) && typeof backups[0] === "string" && backups[0]) {
+        return normalizeProxyTargetUrl(backups[0]);
+      }
+    }
+    return "";
+  };
+
+  if (Array.isArray(video)) {
+    for (const item of video) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const direct =
+        item.urlNoWatermark || item.urlDefault || item.url || "";
+      if (typeof direct === "string" && direct) {
+        return normalizeProxyTargetUrl(direct);
+      }
+      const streamUrl = extractFromStream(item?.media?.stream ?? item?.stream);
+      if (streamUrl) {
+        return streamUrl;
+      }
+    }
+    return "";
+  }
+
+  if (typeof video === "object") {
+    const direct =
+      video.urlNoWatermark || video.urlDefault || video.url || "";
+    if (typeof direct === "string" && direct) {
+      return normalizeProxyTargetUrl(direct);
+    }
+    const streamUrl = extractFromStream(video?.media?.stream ?? video?.stream);
+    if (streamUrl) {
+      return streamUrl;
+    }
+  }
+  return "";
+};
+
+const inferVideoExtension = (contentType: string | null, url: string) => {
+  const normalized = (contentType ?? "").toLowerCase();
+  if (normalized.includes("video/mp4")) {
+    return "mp4";
+  }
+  if (normalized.includes("video/webm")) {
+    return "webm";
+  }
+  if (normalized.includes("video/quicktime")) {
+    return "mov";
+  }
+  if (
+    normalized.includes("application/vnd.apple.mpegurl") ||
+    normalized.includes("application/x-mpegurl")
+  ) {
+    return "m3u8";
+  }
+  const lowerUrl = url.toLowerCase();
+  const match = lowerUrl.match(/\.(mp4|webm|mov|m3u8|ts)(\?|#|$)/);
+  if (match) {
+    return match[1];
+  }
+  return "mp4";
+};
+
 export default function App() {
   const [mode, setMode] = useState<Mode>("single");
   const [url, setUrl] = useState("");
@@ -247,7 +395,6 @@ export default function App() {
       cookie: cookie.trim() || undefined,
       save,
       save_initial_state: saveInitialState,
-      include_initial_state: saveInitialState,
     };
   }, [cookie, save, saveInitialState, timeoutInput, userAgent]);
 
@@ -459,11 +606,12 @@ export default function App() {
   };
 
   const downloadFile = async (url: string, filename: string) => {
-    if (!url) {
+    const normalizedUrl = normalizeMediaUrl(url);
+    if (!normalizedUrl) {
       return;
     }
     try {
-      const response = await fetch(url);
+      const response = await fetch(normalizedUrl);
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -475,7 +623,7 @@ export default function App() {
       URL.revokeObjectURL(objectUrl);
     } catch {
       const anchor = document.createElement("a");
-      anchor.href = url;
+      anchor.href = normalizedUrl;
       anchor.download = filename;
       anchor.target = "_blank";
       anchor.rel = "noreferrer";
@@ -499,11 +647,17 @@ export default function App() {
   const user = note?.user ?? {};
   const authorProfileUrl = getAuthorProfileUrl(user);
   const imageList = Array.isArray(note?.imageList) ? note.imageList : [];
-  const videoList = Array.isArray(note?.video) ? note.video : [];
-  const primaryVideo = videoList[0];
+  const createTime = note?.CreateTime ?? note?.time ?? null;
+  const interactInfo = note?.interactInfo ?? {};
+  const tagNames = (Array.isArray(note?.tagList) ? note.tagList : [])
+    .map((tag: any) => (typeof tag === "string" ? tag : tag?.name))
+    .filter((name: any) => typeof name === "string" && name.trim())
+    .map((name: string) => name.trim());
   const title = note?.title || "Untitled Note";
   const summary = note?.desc || note?.summary || "";
   const coverUrl = note ? getCoverUrl(note, imageList) : "";
+  const primaryVideoUrl = extractVideoUrl(note?.video);
+  const isVideoNote = note?.type === "video" || Boolean(primaryVideoUrl);
 
   const liveImages = imageList
     .map((image: any) => ({
@@ -532,16 +686,39 @@ export default function App() {
   const livePreviewItems: PreviewItem[] = liveGallery
     .map((image: any, index: number) => ({
       type: image.liveUrl ? ("video" as const) : ("image" as const),
-      url: image.liveUrl || getImageUrl(image),
+      url: image.liveUrl ? toMediaProxyUrl(image.liveUrl) : getImageUrl(image),
       poster: getImageUrl(image),
       title: `Live ${index + 1}`,
+      loop: Boolean(image.liveUrl),
+      muted: Boolean(image.liveUrl),
     }))
     .filter((item) => Boolean(item.url));
 
+  const liveCoverImages = (() => {
+    const seen = new Set<string>();
+    const items: any[] = [];
+    for (const image of liveGallery) {
+      const url = getImageUrl(image);
+      if (!url || url === coverUrl || seen.has(url)) {
+        continue;
+      }
+      seen.add(url);
+      items.push(image);
+    }
+    return items;
+  })();
+
   const imageGallery: Array<{ kind: "cover" } | { kind: "image"; image: any }> =
     coverUrl
-      ? [{ kind: "cover" }, ...standardImages.map((image: any) => ({ kind: "image" as const, image }))]
-      : standardImages.map((image: any) => ({ kind: "image" as const, image }));
+      ? [
+          { kind: "cover" },
+          ...liveCoverImages.map((image: any) => ({ kind: "image" as const, image })),
+          ...standardImages.map((image: any) => ({ kind: "image" as const, image })),
+        ]
+      : [
+          ...liveCoverImages.map((image: any) => ({ kind: "image" as const, image })),
+          ...standardImages.map((image: any) => ({ kind: "image" as const, image })),
+        ];
 
   const imagePreviewItems: PreviewItem[] = imageGallery
     .map((item: any, index: number) => {
@@ -557,25 +734,84 @@ export default function App() {
     })
     .filter((item) => Boolean(item.url));
 
-  const handleDownloadAllImages = async () => {
+  const videoPreviewItems: PreviewItem[] = primaryVideoUrl
+    ? [
+        {
+          type: "video" as const,
+          url: toMediaProxyUrl(primaryVideoUrl),
+          poster: coverUrl || undefined,
+          title: "Video",
+          loop: false,
+          muted: false,
+        },
+      ]
+    : [];
+
+  const handleDownloadAllMedia = async () => {
     if (downloadingAll) {
       return;
     }
-    const uniqueByUrl = new Map<string, { url: string }>();
-    for (const image of standardImages) {
-      const imageUrl = getImageUrl(image);
-      if (!imageUrl) {
-        continue;
+
+    const targets: Array<{
+      kind: "image" | "video";
+      url: string;
+      filenameBase: string;
+    }> = [];
+    const seenUrls = new Set<string>();
+    const pushTarget = (
+      kind: "image" | "video",
+      url: string,
+      filenameBase: string
+    ) => {
+      const normalizedUrl = normalizeMediaUrl(url);
+      if (!normalizedUrl || seenUrls.has(normalizedUrl)) {
+        return;
       }
-      if (!uniqueByUrl.has(imageUrl)) {
-        uniqueByUrl.set(imageUrl, { url: imageUrl });
+      seenUrls.add(normalizedUrl);
+      targets.push({ kind, url: normalizedUrl, filenameBase });
+    };
+
+    if (coverUrl) {
+      pushTarget("image", coverUrl, "cover");
+    }
+
+    if (!isVideoNote) {
+      let imageIndex = 0;
+      for (const image of standardImages) {
+        const imageUrl = getImageUrl(image);
+        if (!imageUrl || seenUrls.has(imageUrl)) {
+          continue;
+        }
+        imageIndex += 1;
+        pushTarget(
+          "image",
+          imageUrl,
+          `image_${String(imageIndex).padStart(2, "0")}`
+        );
       }
     }
-    if (coverUrl && !uniqueByUrl.has(coverUrl)) {
-      uniqueByUrl.set(coverUrl, { url: coverUrl });
+
+    if (liveGallery.length > 0) {
+      let liveIndex = 0;
+      for (const image of liveGallery) {
+        liveIndex += 1;
+        const prefix = String(liveIndex).padStart(2, "0");
+        const posterUrl = getImageUrl(image);
+        if (posterUrl) {
+          pushTarget("image", posterUrl, `live_${prefix}_poster`);
+        }
+        const liveUrl = image?.liveUrl;
+        if (typeof liveUrl === "string" && liveUrl) {
+          pushTarget("video", toMediaProxyUrl(liveUrl), `live_${prefix}`);
+        }
+      }
     }
-    const urls = Array.from(uniqueByUrl.values());
-    if (!urls.length) {
+
+    if (primaryVideoUrl) {
+      pushTarget("video", toMediaProxyUrl(primaryVideoUrl), "video");
+    }
+
+    if (!targets.length) {
       return;
     }
 
@@ -608,20 +844,21 @@ export default function App() {
         });
       }
       const usedNames = new Set<string>();
-      for (let i = 0; i < urls.length; i += 1) {
-        const image = urls[i];
-        const response = await fetch(image.url);
+      for (const target of targets) {
+        const response = await fetch(target.url);
         if (!response.ok) {
-          throw new Error(`Failed to fetch image (${response.status}).`);
+          throw new Error(`Failed to fetch media (${response.status}).`);
         }
         const contentType = response.headers.get("content-type");
-        const ext = inferImageExtension(contentType, image.url);
-        const prefix = String(i + 1).padStart(2, "0");
-        const base = `${prefix}.${ext}`;
+        const ext =
+          target.kind === "video"
+            ? inferVideoExtension(contentType, target.url)
+            : inferImageExtension(contentType, target.url);
+        const base = `${target.filenameBase}.${ext}`;
         let filename = base;
         let suffix = 2;
         while (usedNames.has(filename)) {
-          filename = `${prefix}_${suffix}.${ext}`;
+          filename = `${target.filenameBase}_${suffix}.${ext}`;
           suffix += 1;
         }
         usedNames.add(filename);
@@ -651,10 +888,19 @@ export default function App() {
   const activePreview = previewItems[previewIndex];
 
   const metrics = [
-    { label: "Likes", value: note?.likedCount ?? note?.likeCount },
-    { label: "Collects", value: note?.collectedCount ?? note?.collectCount },
-    { label: "Comments", value: note?.commentCount },
-    { label: "Shares", value: note?.shareCount },
+    {
+      label: "Likes",
+      value: interactInfo?.likedCount ?? note?.likedCount ?? note?.likeCount,
+    },
+    {
+      label: "Collects",
+      value:
+        interactInfo?.collectedCount ??
+        note?.collectedCount ??
+        note?.collectCount,
+    },
+    { label: "Comments", value: interactInfo?.commentCount ?? note?.commentCount },
+    { label: "Shares", value: interactInfo?.shareCount ?? note?.shareCount },
   ].filter((item) => item.value !== undefined && item.value !== null);
 
   return (
@@ -937,34 +1183,48 @@ export default function App() {
                   )}
                   <div className="cover-meta">
                     <span>{user.nickname || "Unknown Author"}</span>
-                    <span>{note.time ?? "-"}</span>
+                    <span>{createTime ?? "-"}</span>
                   </div>
                 </div>
                 <div className="info-card">
                   <div className="meta-grid">
                     <div>
                       <span className="meta-label">Author</span>
-                      {authorProfileUrl ? (
-                        <a
-                          href={authorProfileUrl}
-                          className="inline-link"
-                          target="_blank"
-                          rel="noreferrer"
-                          title="Open author profile"
-                        >
-                          {user.nickname || "-"}
-                        </a>
-                      ) : (
-                        <span>{user.nickname || "-"}</span>
-                      )}
+                      <div className="author-row">
+                        {user.avatar ? (
+                          <img
+                            className="avatar"
+                            src={user.avatar}
+                            alt={user.nickname ? `${user.nickname} avatar` : "avatar"}
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="avatar avatar-placeholder" aria-hidden />
+                        )}
+                        <div className="author-text">
+                          {authorProfileUrl ? (
+                            <a
+                              href={authorProfileUrl}
+                              className="inline-link"
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Open author profile"
+                            >
+                              {user.nickname || "-"}
+                            </a>
+                          ) : (
+                            <span>{user.nickname || "-"}</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
                     <div>
-                      <span className="meta-label">Note ID</span>
-                      <span>{note.noteId ?? "-"}</span>
+                      <span className="meta-label">User ID</span>
+                      <span>{user.userId ?? "-"}</span>
                     </div>
                     <div>
-                      <span className="meta-label">Time</span>
-                      <span>{note.time ?? "-"}</span>
+                      <span className="meta-label">CreateTime</span>
+                      <span>{createTime ?? "-"}</span>
                     </div>
                     <div>
                       <span className="meta-label">Last Update</span>
@@ -979,6 +1239,18 @@ export default function App() {
                           <strong>{formatNumber(metric.value)}</strong>
                         </div>
                       ))}
+                    </div>
+                  )}
+                  {tagNames.length > 0 && (
+                    <div>
+                      <span className="meta-label">Tags</span>
+                      <div className="tag-list">
+                        {tagNames.map((name, index) => (
+                          <span key={`${name}-${index}`} className="tag-chip">
+                            {name}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1005,12 +1277,24 @@ export default function App() {
                 <div>
                   <div className="section-header">
                     <h3>Live Gallery</h3>
+                    <div className="section-actions">
+                      <button
+                        type="button"
+                        onClick={handleDownloadAllMedia}
+                        disabled={downloadingAll}
+                      >
+                        {downloadingAll ? "Packaging..." : "Download ZIP"}
+                      </button>
+                    </div>
                   </div>
                   <div className="media-grid">
                     {liveGallery.map((image: any, index: number) => {
                       const previewIndex = livePreviewItems.findIndex(
                         (item) =>
-                          item.url === (image.liveUrl || getImageUrl(image))
+                          item.url ===
+                          (image.liveUrl
+                            ? toMediaProxyUrl(image.liveUrl)
+                            : getImageUrl(image))
                       );
                       return (
                         <figure
@@ -1039,8 +1323,9 @@ export default function App() {
                                 loop
                                 autoPlay
                                 playsInline
+                                preload="metadata"
                                 poster={image.urlNoWatermark ?? image.urlDefault}
-                                src={image.liveUrl}
+                                src={toMediaProxyUrl(image.liveUrl)}
                               />
                             ) : (
                               <img
@@ -1057,14 +1342,14 @@ export default function App() {
                 </div>
               )}
 
-              {imagePreviewItems.length > 0 && (
+              {!isVideoNote && imagePreviewItems.length > 0 && (
                 <div>
                   <div className="section-header">
                     <h3>Images</h3>
                     <div className="section-actions">
                       <button
                         type="button"
-                        onClick={handleDownloadAllImages}
+                        onClick={handleDownloadAllMedia}
                         disabled={downloadingAll}
                       >
                         {downloadingAll ? "Packaging..." : "Download ZIP"}
@@ -1112,10 +1397,65 @@ export default function App() {
                 </div>
               )}
 
-              {primaryVideo?.urlNoWatermark && (
+              {isVideoNote && videoPreviewItems.length > 0 && (
                 <div>
-                  <h3>Video</h3>
-                  <video controls src={primaryVideo.urlNoWatermark} />
+                  <div className="section-header">
+                    <h3>Video</h3>
+                    <div className="section-actions">
+                      <button
+                        type="button"
+                        onClick={handleDownloadAllMedia}
+                        disabled={downloadingAll}
+                      >
+                        {downloadingAll ? "Packaging..." : "Download ZIP"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="media-grid">
+                    <figure
+                      key="video"
+                      className="media-card"
+                      onClick={() => openPreview(videoPreviewItems, 0)}
+                    >
+                      <button
+                        type="button"
+                        className="media-preview"
+                        onClick={() => openPreview(videoPreviewItems, 0)}
+                      >
+                        {coverUrl ? (
+                          <img
+                            src={coverUrl}
+                            alt={`${title} video cover`}
+                            loading="lazy"
+                          />
+                          ) : (
+                            <video
+                              muted
+                              loop
+                              autoPlay
+                              playsInline
+                              preload="metadata"
+                              src={toMediaProxyUrl(primaryVideoUrl)}
+                            />
+                          )}
+                      </button>
+                      <div className="media-overlay">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            const ext = inferVideoExtension(null, primaryVideoUrl);
+                            downloadFile(
+                              toMediaProxyUrl(primaryVideoUrl),
+                              `note_${note?.noteId ?? "detail"}_video.${ext}`
+                            );
+                          }}
+                        >
+                          Download
+                        </button>
+                      </div>
+                    </figure>
+                  </div>
                 </div>
               )}
 
@@ -1177,85 +1517,65 @@ export default function App() {
       </main>
 
               {previewOpen && activePreview && (
-        <div className="preview-overlay" onClick={closePreview} onWheel={handlePreviewWheel}>
-          {activePreview.type === "image" ? (
-            <div
-              className="preview-viewport"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <img
-                className="preview-media"
-                src={activePreview.url}
-                alt={activePreview.title}
-                draggable={false}
-              />
-            </div>
-          ) : (
-            <div className="preview-card" onClick={closePreview}>
-              <div
-                className="preview-card-inner"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="preview-header">
-                  <span>{activePreview.title}</span>
-                  <div className="preview-actions">
-                    {canNavigatePreview && (
-                      <>
-                        <button type="button" onClick={goPreviewPrev}>
-                          Prev
-                        </button>
-                        <button type="button" onClick={goPreviewNext}>
-                          Next
-                        </button>
-                      </>
+                <div
+                  className="preview-overlay"
+                  onClick={closePreview}
+                  onWheel={handlePreviewWheel}
+                >
+                  <div
+                    className="preview-viewport"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {activePreview.type === "image" ? (
+                      <img
+                        className="preview-media"
+                        src={activePreview.url}
+                        alt={activePreview.title}
+                        draggable={false}
+                      />
+                    ) : (
+                      <video
+                        className="preview-media"
+                        controls
+                        playsInline
+                        autoPlay
+                        muted={Boolean(activePreview.muted)}
+                        loop={Boolean(activePreview.loop)}
+                        poster={activePreview.poster}
+                        src={activePreview.url}
+                      />
                     )}
-                    <button type="button" onClick={closePreview}>
-                      Close
-                    </button>
                   </div>
+                  {canNavigatePreview && (
+                    <>
+                      <button
+                        type="button"
+                        className="preview-arrow preview-arrow-left"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          goPreviewPrev();
+                        }}
+                        aria-label="Previous"
+                        title="Previous (←)"
+                      >
+                        ‹
+                      </button>
+                      <button
+                        type="button"
+                        className="preview-arrow preview-arrow-right"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          goPreviewNext();
+                        }}
+                        aria-label="Next"
+                        title="Next (→)"
+                      >
+                        ›
+                      </button>
+                    </>
+                  )}
                 </div>
-                <video
-                  controls
-                  autoPlay
-                  muted
-                  loop
-                  playsInline
-                  poster={activePreview.poster}
-                  src={activePreview.url}
-                />
-              </div>
-            </div>
-          )}
-          {activePreview.type === "image" && canNavigatePreview && (
-            <>
-              <button
-                type="button"
-                className="preview-arrow preview-arrow-left"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  goPreviewPrev();
-                }}
-                aria-label="Previous image"
-                title="Previous (←)"
-              >
-                ‹
-              </button>
-              <button
-                type="button"
-                className="preview-arrow preview-arrow-right"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  goPreviewNext();
-                }}
-                aria-label="Next image"
-                title="Next (→)"
-              >
-                ›
-              </button>
-            </>
-          )}
-        </div>
-      )}
+              )}
     </div>
   );
 }

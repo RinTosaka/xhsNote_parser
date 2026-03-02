@@ -24,6 +24,42 @@ def extract_note_data(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return note_section, full_state
 
 
+def build_note_stub_from_initial_state(initial_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort build a minimal note_detail-like dict from window.__INITIAL_STATE__.
+
+    该返回值可用于命名输出文件（例如 initial_state 的落盘路径），即使后续解析失败，
+    也尽量能生成稳定的文件名。
+    """
+
+    note_section = initial_state.get("note")
+    if not isinstance(note_section, dict):
+        return {}
+
+    note_detail_map = note_section.get("noteDetailMap")
+    if not isinstance(note_detail_map, dict):
+        return {}
+
+    for entry in note_detail_map.values():
+        if not isinstance(entry, dict):
+            continue
+        note = entry.get("note")
+        if not isinstance(note, dict) or not note:
+            continue
+
+        stub: Dict[str, Any] = {}
+        if "title" in note:
+            stub["title"] = note.get("title")
+        note_id = note.get("noteId") or note.get("id")
+        if note_id:
+            stub["noteId"] = note_id
+        user = note.get("user")
+        if isinstance(user, dict) and user:
+            stub["user"] = user
+        return stub
+
+    return {}
+
+
 def _safe_first_note(note_detail_map: Dict[str, Any]) -> Dict[str, Any]:
     for entry in note_detail_map.values():
         note = entry.get("note")
@@ -90,7 +126,7 @@ def _enrich_images(images: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _enrich_video(video: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     enriched = []
     video_copy = dict(video)
-    originVideoKey = video_copy.get("consumer", "").get("originVideoKey", "")
+    originVideoKey = video_copy.get("media", "").get("videoId", "")
     video_copy["urlNoWatermark"] = _build_nowatermark_video_default(originVideoKey)
     enriched.append(video_copy)
     logger.debug("处理 imageList 完成，共 %d 条", len(enriched))
@@ -101,9 +137,11 @@ def build_note_detail(note_data: Dict[str, Any], note_url: str) -> Dict[str, Any
     note_detail_map = note_data.get("noteDetailMap") or {}
     note_detail = _safe_first_note(note_detail_map)
     note_detail["imageList"] = _enrich_images(note_detail.get("imageList", []))
-    if note_detail.get("video"):
-        note_detail["video"] = _enrich_video(note_detail.get("video", []))
-    note_detail["time"] = _format_timestamp(note_detail.get("time"))
+    # if note_detail.get("video"):
+    #     note_detail["video"] = _enrich_video(note_detail.get("video", []))
+    create_time = _format_timestamp(note_detail.get("time"))
+    note_detail["CreateTime"] = create_time
+    note_detail.pop("time", None)
     note_detail["lastUpdateTime"] = _format_timestamp(note_detail.get("lastUpdateTime"))
     note_detail["noteUrl"] = note_url
     return note_detail
