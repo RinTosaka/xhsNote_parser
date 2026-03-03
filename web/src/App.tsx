@@ -913,7 +913,16 @@ export default function App() {
 
       <header className="hero">
         <div>
-          <p className="eyebrow">XHS Note Parser Studio</p>
+          <div className="brand">
+            <img
+              className="brand-logo"
+              src="https://fe-video-qc.xhscdn.com/fe-platform/ed8fe781ce9e16c1bfac2cd962f0721edabe2e49.ico"
+              alt="小红书"
+              width={28}
+              height={28}
+            />
+            <p className="eyebrow">XHS Note Parser Studio</p>
+          </div>
           <h1>Parse, enrich, and showcase Xiaohongshu notes in one flow.</h1>
           <p className="lead">
             Paste a note URL, tune headers, and instantly preview the structured
