@@ -31,7 +31,7 @@ from .api_models import (
     ParseResponse,
     SavedPaths,
 )
-from .api_utils import build_output_path, list_outputs, safe_resolve
+from .api_utils import build_output_path, delete_output_file, list_outputs, safe_resolve
 from .logging_utils import configure_logging, resolve_log_level
 from .note_detail import build_note_stub_from_initial_state
 from .service import parse_note
@@ -450,6 +450,24 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=500, detail="Failed to read output file."
             ) from exc
+
+    @app.delete("/api/outputs/{relative_path:path}")
+    async def delete_output(relative_path: str) -> JSONResponse:
+        try:
+            deleted = delete_output_file(settings.output_dir, relative_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="File not found.") from exc
+        except IsADirectoryError as exc:
+            raise HTTPException(status_code=400, detail="Target is not a file.") from exc
+        except OSError as exc:
+            logger.exception("Failed to delete output file: %s", exc)
+            raise HTTPException(
+                status_code=500, detail="Failed to delete output file."
+            ) from exc
+        deleted_relative = deleted.relative_to(settings.output_dir).as_posix()
+        return JSONResponse(content={"ok": True, "deleted": deleted_relative})
 
     if settings.static_dir:
         app.mount(

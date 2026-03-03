@@ -52,3 +52,14 @@ export async function fetchOutputs(
 ): Promise<OutputListResponse> {
   return fetchJson<OutputListResponse>(`${API_BASE}/outputs?limit=${limit}`);
 }
+
+const encodePath = (value: string) =>
+  value
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+
+export async function deleteOutput(relativePath: string): Promise<void> {
+  const encodedPath = encodePath(relativePath);
+  await fetchJson(`${API_BASE}/outputs/${encodedPath}`, { method: "DELETE" });
+}

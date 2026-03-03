@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, fetchOutputs, parseBatch, parseSingle } from "./api";
+import { API_BASE, deleteOutput, fetchOutputs, parseBatch, parseSingle } from "./api";
 import type {
   BatchItem,
   OutputItem,
@@ -354,6 +354,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
   const [outputsLoading, setOutputsLoading] = useState(false);
+  const [deletingOutput, setDeletingOutput] = useState<string | null>(null);
   const [previewItems, setPreviewItems] = useState<PreviewItem[]>([]);
   const [previewIndex, setPreviewIndex] = useState(0);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -380,6 +381,13 @@ export default function App() {
     }
     localStorage.setItem(HISTORY_KEY, JSON.stringify(results.slice(0, 15)));
   }, [keepHistory, results]);
+
+  useEffect(() => {
+    if (selectedId && results.some((item) => item.id === selectedId)) {
+      return;
+    }
+    setSelectedId(results[0]?.id ?? null);
+  }, [results, selectedId]);
 
   const selected = useMemo(
     () => results.find((item) => item.id === selectedId) ?? results[0],
@@ -642,6 +650,37 @@ export default function App() {
       setOutputsLoading(false);
     }
   };
+
+  const handleDeleteHistory = useCallback(
+    (id: string) => {
+      setResults((prev) => prev.filter((item) => item.id !== id));
+    },
+    [setResults]
+  );
+
+  const handleDeleteSavedOutput = useCallback(
+    async (relativePath: string) => {
+      if (deletingOutput) {
+        return;
+      }
+      const confirmed = window.confirm(`Delete saved file?\n${relativePath}`);
+      if (!confirmed) {
+        return;
+      }
+      setDeletingOutput(relativePath);
+      try {
+        await deleteOutput(relativePath);
+        setOutputs((prev) =>
+          prev.filter((item) => item.relative_path !== relativePath)
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to delete output.");
+      } finally {
+        setDeletingOutput(null);
+      }
+    },
+    [deletingOutput]
+  );
 
   const note = selected?.response?.note ?? null;
   const user = note?.user ?? {};
@@ -1086,21 +1125,31 @@ export default function App() {
             ) : (
               <div className="history-list">
                 {results.map((item) => (
-                  <button
-                    key={item.id}
-                    className={
-                      item.id === selected?.id ? "history-item active" : "history-item"
-                    }
-                    type="button"
-                    onClick={() => setSelectedId(item.id)}
-                  >
-                    <span className="history-title">
-                      {item.response?.note?.title ?? item.url}
-                    </span>
-                    <span className={item.ok ? "status ok" : "status error"}>
-                      {item.ok ? "OK" : "Error"}
-                    </span>
-                  </button>
+                  <div key={item.id} className="history-row">
+                    <button
+                      className={
+                        item.id === selected?.id ? "history-item active" : "history-item"
+                      }
+                      type="button"
+                      onClick={() => setSelectedId(item.id)}
+                    >
+                      <span className="history-title">
+                        {item.response?.note?.title ?? item.url}
+                      </span>
+                      <span className={item.ok ? "status ok" : "status error"}>
+                        {item.ok ? "OK" : "Error"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="item-button danger"
+                      onClick={() => handleDeleteHistory(item.id)}
+                      title="Delete history item"
+                      aria-label="Delete history item"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -1119,11 +1168,23 @@ export default function App() {
               <div className="output-list">
                 {outputs.map((item) => (
                   <div key={item.relative_path} className="output-item">
-                    <div>
+                    <div className="output-meta">
                       <strong>{item.kind}</strong>
-                      <span>{item.relative_path}</span>
+                      <span className="output-path">{item.relative_path}</span>
                     </div>
-                    <span>{Math.round(item.size / 1024)} KB</span>
+                    <div className="output-actions">
+                      <span>{Math.round(item.size / 1024)} KB</span>
+                      <button
+                        type="button"
+                        className="item-button danger"
+                        onClick={() => handleDeleteSavedOutput(item.relative_path)}
+                        disabled={Boolean(deletingOutput)}
+                        title="Delete saved file"
+                        aria-label="Delete saved file"
+                      >
+                        {deletingOutput === item.relative_path ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

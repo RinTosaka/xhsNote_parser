@@ -349,6 +349,12 @@ textarea:focus {
   gap: 8px;
 }
 
+.history-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
 .history-item {
   display: flex;
   align-items: center;
@@ -358,6 +364,9 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.7);
   padding: 10px 12px;
   cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
 }
 
 .history-item.active {
@@ -400,6 +409,48 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.6);
   border: 1px solid rgba(18, 44, 51, 0.08);
   font-size: 0.85rem;
+}
+
+.output-meta {
+  min-width: 0;
+}
+
+.output-path {
+  display: block;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.output-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.item-button {
+  border-radius: 999px;
+  border: 1px solid rgba(18, 44, 51, 0.18);
+  background: rgba(255, 255, 255, 0.85);
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.item-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.item-button.danger {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+  color: #b91c1c;
+}
+
+.item-button.danger:hover {
+  background: rgba(239, 68, 68, 0.12);
 }
 
 .output-item strong {

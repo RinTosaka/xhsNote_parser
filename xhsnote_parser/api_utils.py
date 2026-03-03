@@ -48,6 +48,33 @@ def safe_resolve(base_dir: Path, relative_path: str) -> Path:
     return resolved
 
 
+def _cleanup_empty_parents(target: Path, *, base_dir: Path) -> None:
+    base_resolved = base_dir.resolve()
+    current = target.parent.resolve()
+    while current != base_resolved and base_resolved in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent.resolve()
+
+
+def delete_output_file(base_dir: Path, relative_path: str) -> Path:
+    """Delete a persisted JSON output file under base_dir.
+
+    Ensures relative_path cannot escape base_dir and prunes empty parent folders.
+    """
+
+    target = safe_resolve(base_dir, relative_path)
+    if not target.exists():
+        raise FileNotFoundError(relative_path)
+    if not target.is_file():
+        raise IsADirectoryError(relative_path)
+    target.unlink()
+    _cleanup_empty_parents(target, base_dir=base_dir)
+    return target
+
+
 @dataclass(frozen=True)
 class OutputItem:
     relative_path: str
