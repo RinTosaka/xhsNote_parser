@@ -1286,15 +1286,6 @@ export default function App() {
                 <div>
                   <div className="section-header">
                     <h3>Live Gallery</h3>
-                    <div className="section-actions">
-                      <button
-                        type="button"
-                        onClick={handleDownloadAllMedia}
-                        disabled={downloadingAll}
-                      >
-                        {downloadingAll ? "Packaging..." : "Download ZIP"}
-                      </button>
-                    </div>
                   </div>
                   <div className="media-grid">
                     {liveGallery.map((image: any, index: number) => {
