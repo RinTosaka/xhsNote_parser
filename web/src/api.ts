@@ -60,6 +60,11 @@ const encodePath = (value: string) =>
     .map((segment) => encodeURIComponent(segment))
     .join("/");
 
+export async function fetchOutputFile(relativePath: string): Promise<unknown> {
+  const encodedPath = encodePath(relativePath);
+  return fetchJson(`${API_BASE}/outputs/${encodedPath}`);
+}
+
 export async function deleteOutput(relativePath: string): Promise<void> {
   const encodedPath = encodePath(relativePath);
   await fetchJson(`${API_BASE}/outputs/${encodedPath}`, { method: "DELETE" });

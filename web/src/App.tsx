@@ -4,6 +4,7 @@ import {
   cleanupOutputs,
   deleteOutput,
   fetchOutputs,
+  fetchOutputFile,
   parseBatch,
   parseSingle,
 } from "./api";
@@ -377,6 +378,7 @@ export default function App() {
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
   const [outputsLoading, setOutputsLoading] = useState(false);
   const [deletingOutput, setDeletingOutput] = useState<string | null>(null);
+  const [loadingOutput, setLoadingOutput] = useState<string | null>(null);
   const [previewItems, setPreviewItems] = useState<PreviewItem[]>([]);
   const [previewIndex, setPreviewIndex] = useState(0);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -777,6 +779,77 @@ export default function App() {
       }
     },
     [deletingOutput]
+  );
+
+  const buildNoteFromInitialState = useCallback((state: any) => {
+    const noteSection = state?.note;
+    const noteDetailMap = noteSection?.noteDetailMap;
+    if (!noteDetailMap || typeof noteDetailMap !== "object") {
+      return null;
+    }
+    for (const entry of Object.values(noteDetailMap)) {
+      const note = (entry as any)?.note;
+      if (note && typeof note === "object" && Object.keys(note).length > 0) {
+        return note as Record<string, any>;
+      }
+    }
+    return null;
+  }, []);
+
+  const handleLoadSavedOutput = useCallback(
+    async (item: OutputItem) => {
+      if (loadingOutput) {
+        return;
+      }
+      setError(null);
+      setLoadingOutput(item.relative_path);
+      try {
+        const payload = await fetchOutputFile(item.relative_path);
+        if (!payload || typeof payload !== "object") {
+          throw new Error("Invalid output payload.");
+        }
+
+        let notePayload: Record<string, any> = {};
+        let initialState: Record<string, any> | null = null;
+        if (item.kind === "initial_state") {
+          initialState = payload as Record<string, any>;
+          const stub = buildNoteFromInitialState(initialState);
+          if (stub) {
+            notePayload = stub;
+          } else {
+            notePayload = {};
+          }
+        } else {
+          notePayload = payload as Record<string, any>;
+        }
+
+        const response = {
+          url: (notePayload as any)?.noteUrl ?? "",
+          note: notePayload,
+          saved:
+            item.kind === "initial_state"
+              ? { initial_state: item.relative_path }
+              : { note_detail: item.relative_path },
+          initial_state: initialState,
+          elapsed_ms: 0,
+        };
+
+        const card: ResultCard = {
+          id: buildId(),
+          url: item.relative_path,
+          ok: true,
+          options,
+          response,
+          createdAt: new Date().toISOString(),
+        };
+        addResults([card]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load output.");
+      } finally {
+        setLoadingOutput(null);
+      }
+    },
+    [addResults, buildNoteFromInitialState, loadingOutput, options]
   );
 
   const note = selected?.response?.note ?? null;
@@ -1297,6 +1370,16 @@ export default function App() {
                     </div>
                     <div className="output-actions">
                       <span>{Math.round(item.size / 1024)} KB</span>
+                      <button
+                        type="button"
+                        className="item-button"
+                        onClick={() => handleLoadSavedOutput(item)}
+                        disabled={Boolean(loadingOutput)}
+                        title="Load to viewer"
+                        aria-label="Load to viewer"
+                      >
+                        {loadingOutput === item.relative_path ? "Loading..." : "Load"}
+                      </button>
                       <button
                         type="button"
                         className="item-button danger"
