@@ -12,22 +12,29 @@ export const API_BASE =
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init);
+  const bodyText = await response.text();
+  let data: any = null;
+  if (bodyText) {
+    try {
+      data = JSON.parse(bodyText);
+    } catch (err) {
+      if (response.ok) {
+        throw new Error("Invalid JSON response.");
+      }
+    }
+  }
+
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
-    try {
-      const data = await response.json();
-      if (data && typeof data.detail === "string") {
-        message = data.detail;
-      }
-    } catch {
-      const body = await response.text();
-      if (body) {
-        message = body;
-      }
+    if (data && typeof data.detail === "string") {
+      message = data.detail;
+    } else if (bodyText) {
+      message = bodyText;
     }
     throw new Error(message);
   }
-  return (await response.json()) as T;
+
+  return data as T;
 }
 
 export async function parseSingle(payload: ParseRequest): Promise<ParseResponse> {

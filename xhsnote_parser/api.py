@@ -483,8 +483,9 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=500, detail="Failed to delete output file."
             ) from exc
-        deleted_relative = deleted.relative_to(settings.output_dir).as_posix()
-        return JSONResponse(content={"ok": True, "deleted": deleted_relative})
+        # settings.output_dir can be a relative Path; using the user-provided relative_path
+        # avoids Path.relative_to() errors while still being safe thanks to delete_output_file().
+        return JSONResponse(content={"ok": True, "deleted": relative_path})
 
     @app.post("/api/outputs/cleanup")
     async def cleanup_saved_outputs(payload: CleanupOutputsRequest) -> JSONResponse:
