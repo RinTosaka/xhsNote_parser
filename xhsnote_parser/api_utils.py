@@ -75,6 +75,44 @@ def delete_output_file(base_dir: Path, relative_path: str) -> Path:
     return target
 
 
+def cleanup_outputs(base_dir: Path, *, max_age_seconds: int) -> List[str]:
+    """Delete persisted output JSON files older than max_age_seconds.
+
+    Returns the list of deleted relative paths.
+    """
+
+    if max_age_seconds <= 0:
+        return []
+    if not base_dir.exists():
+        return []
+
+    now_ts = datetime.now().timestamp()
+    cutoff_ts = now_ts - max_age_seconds
+    deleted: List[str] = []
+
+    for path in base_dir.rglob("*.json"):
+        if not path.is_file():
+            continue
+        name = path.name
+        if not (name.endswith("_noteDetail.json") or name.endswith("_initial_state.json")):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime >= cutoff_ts:
+            continue
+        relative = path.relative_to(base_dir).as_posix()
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        _cleanup_empty_parents(path, base_dir=base_dir)
+        deleted.append(relative)
+
+    return deleted
+
+
 @dataclass(frozen=True)
 class OutputItem:
     relative_path: str

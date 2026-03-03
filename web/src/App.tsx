@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, deleteOutput, fetchOutputs, parseBatch, parseSingle } from "./api";
+import {
+  API_BASE,
+  cleanupOutputs,
+  deleteOutput,
+  fetchOutputs,
+  parseBatch,
+  parseSingle,
+} from "./api";
 import type {
   BatchItem,
   OutputItem,
@@ -30,6 +37,21 @@ type PreviewItem = {
 };
 
 const HISTORY_KEY = "xhsnote.history";
+const RETENTION_KEY = "xhsnote.retention";
+const RETENTION_OPTIONS: Array<{ label: string; value: string; seconds: number }> =
+  [
+    { label: "不清理", value: "none", seconds: 0 },
+    { label: "1小时", value: "1h", seconds: 60 * 60 },
+    { label: "6小时", value: "6h", seconds: 6 * 60 * 60 },
+    { label: "12小时", value: "12h", seconds: 12 * 60 * 60 },
+    { label: "1天", value: "1d", seconds: 24 * 60 * 60 },
+    { label: "7天", value: "7d", seconds: 7 * 24 * 60 * 60 },
+    { label: "15天", value: "15d", seconds: 15 * 24 * 60 * 60 },
+    { label: "1个月", value: "1mo", seconds: 30 * 24 * 60 * 60 },
+    { label: "3个月", value: "3mo", seconds: 90 * 24 * 60 * 60 },
+    { label: "6个月", value: "6mo", seconds: 180 * 24 * 60 * 60 },
+    { label: "1年", value: "1y", seconds: 365 * 24 * 60 * 60 },
+  ];
 
 const buildId = () => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -360,6 +382,8 @@ export default function App() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [retention, setRetention] = useState<string>("none");
+  const [cleanupBusy, setCleanupBusy] = useState(false);
 
   useEffect(() => {
     const raw = localStorage.getItem(HISTORY_KEY);
@@ -376,6 +400,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const saved = localStorage.getItem(RETENTION_KEY);
+    if (!saved) {
+      return;
+    }
+    if (RETENTION_OPTIONS.some((option) => option.value === saved)) {
+      setRetention(saved);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!keepHistory) {
       return;
     }
@@ -388,6 +422,25 @@ export default function App() {
     }
     setSelectedId(results[0]?.id ?? null);
   }, [results, selectedId]);
+
+  const retentionSeconds =
+    RETENTION_OPTIONS.find((option) => option.value === retention)?.seconds ?? 0;
+
+  const pruneHistoryByRetention = useCallback(
+    (seconds: number) => {
+      if (seconds <= 0) {
+        return;
+      }
+      const cutoff = Date.now() - seconds * 1000;
+      setResults((prev) =>
+        prev.filter((item) => {
+          const ts = Date.parse(item.createdAt);
+          return Number.isNaN(ts) ? true : ts >= cutoff;
+        })
+      );
+    },
+    [setResults]
+  );
 
   const selected = useMemo(
     () => results.find((item) => item.id === selectedId) ?? results[0],
@@ -650,6 +703,50 @@ export default function App() {
       setOutputsLoading(false);
     }
   };
+
+  const handleCleanupNow = useCallback(async () => {
+    if (cleanupBusy) {
+      return;
+    }
+    pruneHistoryByRetention(retentionSeconds);
+    if (retentionSeconds <= 0) {
+      return;
+    }
+    setCleanupBusy(true);
+    try {
+      const response = await cleanupOutputs(retentionSeconds);
+      if (Array.isArray(response.deleted) && response.deleted.length > 0) {
+        const deletedSet = new Set(response.deleted);
+        setOutputs((prev) => prev.filter((item) => !deletedSet.has(item.relative_path)));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cleanup outputs.");
+    } finally {
+      setCleanupBusy(false);
+    }
+  }, [cleanupBusy, pruneHistoryByRetention, retentionSeconds]);
+
+  useEffect(() => {
+    if (retentionSeconds <= 0) {
+      return;
+    }
+    pruneHistoryByRetention(retentionSeconds);
+    const interval = window.setInterval(async () => {
+      pruneHistoryByRetention(retentionSeconds);
+      try {
+        const response = await cleanupOutputs(retentionSeconds);
+        if (Array.isArray(response.deleted) && response.deleted.length > 0) {
+          const deletedSet = new Set(response.deleted);
+          setOutputs((prev) =>
+            prev.filter((item) => !deletedSet.has(item.relative_path))
+          );
+        }
+      } catch {
+        // auto cleanup errors are intentionally ignored
+      }
+    }, 10 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [pruneHistoryByRetention, retentionSeconds]);
 
   const handleDeleteHistory = useCallback(
     (id: string) => {
@@ -1158,9 +1255,35 @@ export default function App() {
           <div className="panel-section">
             <div className="section-header">
               <h3>Saved Outputs</h3>
-              <button type="button" onClick={handleRefreshOutputs}>
-                {outputsLoading ? "Refreshing..." : "Refresh"}
-              </button>
+              <div className="section-actions">
+                <select
+                  value={retention}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setRetention(value);
+                    localStorage.setItem(RETENTION_KEY, value);
+                  }}
+                  aria-label="Retention policy"
+                  title="Auto cleanup retention"
+                >
+                  {RETENTION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleCleanupNow}
+                  disabled={cleanupBusy || retentionSeconds <= 0}
+                  title="Cleanup now"
+                >
+                  {cleanupBusy ? "Cleaning..." : "Clean now"}
+                </button>
+                <button type="button" onClick={handleRefreshOutputs}>
+                  {outputsLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
             </div>
             {outputs.length === 0 ? (
               <p className="muted">No saved files found.</p>

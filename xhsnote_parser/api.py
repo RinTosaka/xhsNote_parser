@@ -31,7 +31,15 @@ from .api_models import (
     ParseResponse,
     SavedPaths,
 )
-from .api_utils import build_output_path, delete_output_file, list_outputs, safe_resolve
+from pydantic import BaseModel, Field
+
+from .api_utils import (
+    build_output_path,
+    cleanup_outputs,
+    delete_output_file,
+    list_outputs,
+    safe_resolve,
+)
 from .logging_utils import configure_logging, resolve_log_level
 from .note_detail import build_note_stub_from_initial_state
 from .service import parse_note
@@ -57,6 +65,15 @@ class ParseFailure(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+class CleanupOutputsRequest(BaseModel):
+    retention_seconds: int = Field(
+        ...,
+        ge=0,
+        le=366 * 24 * 60 * 60,
+        description="Max age (seconds) to keep outputs. 0 means no cleanup.",
+    )
 
 
 def _extract_note_id_from_url(url: str) -> Optional[str]:
@@ -468,6 +485,24 @@ def create_app() -> FastAPI:
             ) from exc
         deleted_relative = deleted.relative_to(settings.output_dir).as_posix()
         return JSONResponse(content={"ok": True, "deleted": deleted_relative})
+
+    @app.post("/api/outputs/cleanup")
+    async def cleanup_saved_outputs(payload: CleanupOutputsRequest) -> JSONResponse:
+        retention_seconds = int(payload.retention_seconds)
+        if retention_seconds <= 0:
+            return JSONResponse(content={"ok": True, "deleted_count": 0, "deleted": []})
+        try:
+            deleted = await run_in_threadpool(
+                cleanup_outputs,
+                settings.output_dir,
+                max_age_seconds=retention_seconds,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Failed to cleanup outputs: %s", exc)
+            raise HTTPException(status_code=500, detail="Failed to cleanup outputs.") from exc
+        return JSONResponse(
+            content={"ok": True, "deleted_count": len(deleted), "deleted": deleted}
+        )
 
     if settings.static_dir:
         app.mount(

@@ -58,3 +58,9 @@ export type OutputListResponse = {
   items: OutputItem[];
   total: number;
 };
+
+export type CleanupOutputsResponse = {
+  ok: boolean;
+  deleted_count: number;
+  deleted: string[];
+};

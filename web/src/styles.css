@@ -931,6 +931,21 @@ pre {
   cursor: pointer;
 }
 
+.section-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.section-actions select {
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.3);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
 .section-actions button:disabled {
   opacity: 0.6;
   cursor: not-allowed;

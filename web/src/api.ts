@@ -1,6 +1,7 @@
 import type {
   BatchParseRequest,
   BatchResponse,
+  CleanupOutputsResponse,
   OutputListResponse,
   ParseRequest,
   ParseResponse,
@@ -62,4 +63,14 @@ const encodePath = (value: string) =>
 export async function deleteOutput(relativePath: string): Promise<void> {
   const encodedPath = encodePath(relativePath);
   await fetchJson(`${API_BASE}/outputs/${encodedPath}`, { method: "DELETE" });
+}
+
+export async function cleanupOutputs(
+  retentionSeconds: number
+): Promise<CleanupOutputsResponse> {
+  return fetchJson<CleanupOutputsResponse>(`${API_BASE}/outputs/cleanup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ retention_seconds: retentionSeconds }),
+  });
 }
