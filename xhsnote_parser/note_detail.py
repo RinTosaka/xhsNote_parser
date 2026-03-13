@@ -3,6 +3,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +88,17 @@ def _format_timestamp(ms_value: Optional[int]) -> Optional[str]:
 def _extract_path(url_default: str) -> Optional[str]:
     if not url_default:
         return None
-    path_prefix, trace_id = url_default.rsplit("/", 2)[1:]
-    trace_id = trace_id.split("!")[0]
-    if "_" not in path_prefix:
-        extracted_path = f"{trace_id}"
-    else:
-        extracted_path = f"{path_prefix}/{trace_id}"
-    return extracted_path or None
+    parsed = urlparse(url_default)
+    segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    if not segments:
+        return None
+    trace_id = segments[-1].split("!")[0]
+    if len(segments) >= 2:
+        path_prefix = segments[-2]
+        if "_" in path_prefix or path_prefix == "spectrum":
+            extracted_path = f"{path_prefix}/{trace_id}"
+            return extracted_path or None
+    return trace_id or None
 
 
 def _build_nowatermark_imgUrl_default(extracted_path: str) -> str:
