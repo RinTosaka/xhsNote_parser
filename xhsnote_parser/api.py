@@ -152,9 +152,34 @@ def _resolve_log_level(default: int = logging.INFO) -> int:
         return default
 
 
+def _resolve_output_dir(path: Path) -> Path:
+    """Ensure output dir is writable; fallback to /tmp/output when needed."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return path
+    except OSError as exc:
+        fallback = Path("/tmp/output")
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning(
+                "输出目录不可写且创建 /tmp/output 失败: %s; 原路径: %s",
+                exc,
+                path,
+            )
+            return path
+        logger.warning("输出目录不可写，已回退到 /tmp/output: %s", exc)
+        return fallback
+
+
 def load_settings() -> ApiSettings:
     default_timeout = _env_int("XHSNOTE_TIMEOUT", 15)
-    output_dir = Path(_env_str("XHSNOTE_OUTPUT_DIR", "output")).expanduser()
+    output_dir = _resolve_output_dir(
+        Path(_env_str("XHSNOTE_OUTPUT_DIR", "output")).expanduser()
+    )
     cors_origins = _env_list("XHSNOTE_API_CORS_ORIGINS", ["http://localhost:5173"])
     allow_all_origins = cors_origins == ["*"]
     save_log = _env_bool("XHSNOTE_SAVE_LOG", False)
