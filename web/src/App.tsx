@@ -37,6 +37,22 @@ type PreviewItem = {
   muted?: boolean;
 };
 
+type GroupedOutputItem = {
+  source: OutputItem;
+  authorKey: string;
+  authorName: string;
+  noteTitle: string;
+  noteId: string;
+  noteKey: string;
+};
+
+type OutputAuthorGroup = {
+  authorKey: string;
+  authorName: string;
+  items: GroupedOutputItem[];
+  noteCount: number;
+};
+
 const HISTORY_KEY = "xhsnote.history";
 const RETENTION_KEY = "xhsnote.retention";
 const RETENTION_OPTIONS: Array<{ label: string; value: string; seconds: number }> =
@@ -84,6 +100,37 @@ const parseList = (raw: string) =>
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+
+const parseOutputItem = (item: OutputItem): GroupedOutputItem => {
+  const normalizedPath = item.relative_path.replace(/\\/g, "/");
+  const segments = normalizedPath.split("/").filter(Boolean);
+  const folder = segments.length > 1 ? segments[0] : "";
+  const authorKey =
+    folder && folder.endsWith("_notes")
+      ? folder.slice(0, -"_notes".length)
+      : "unknown_author";
+  const authorName = authorKey || "unknown_author";
+
+  const filename = segments[segments.length - 1] || item.relative_path;
+  const suffixMatch = filename.match(/_(noteDetail|initial_state)\.json$/);
+  const baseName = suffixMatch
+    ? filename.slice(0, -suffixMatch[0].length)
+    : filename.replace(/\.json$/i, "");
+  const splitAt = baseName.lastIndexOf("_");
+  const rawTitle = splitAt > 0 ? baseName.slice(0, splitAt) : baseName;
+  const noteId = splitAt > 0 ? baseName.slice(splitAt + 1) : "";
+  const noteTitle = rawTitle.replace(/_/g, " ").trim() || filename;
+  const noteKey = noteId || baseName || filename;
+
+  return {
+    source: item,
+    authorKey,
+    authorName,
+    noteTitle,
+    noteId,
+    noteKey,
+  };
+};
 
 const EXAMPLE_URL =
   "https://www.xiaohongshu.com/explore/6971ebf3000000002202076e?xsec_token=AB7yCpkwh6ZRTGkPFLvJcq_9_L0Nri570NCfUkPUFPCl8=&xsec_source=pc_user";
@@ -852,6 +899,36 @@ export default function App() {
     [addResults, buildNoteFromInitialState, loadingOutput, options]
   );
 
+  const outputAuthorGroups = useMemo<OutputAuthorGroup[]>(() => {
+    const groups = new Map<
+      string,
+      {
+        authorKey: string;
+        authorName: string;
+        items: GroupedOutputItem[];
+      }
+    >();
+
+    for (const item of outputs) {
+      const parsed = parseOutputItem(item);
+      const existing = groups.get(parsed.authorKey);
+      if (existing) {
+        existing.items.push(parsed);
+      } else {
+        groups.set(parsed.authorKey, {
+          authorKey: parsed.authorKey,
+          authorName: parsed.authorName,
+          items: [parsed],
+        });
+      }
+    }
+
+    return Array.from(groups.values()).map((group) => ({
+      ...group,
+      noteCount: new Set(group.items.map((entry) => entry.noteKey)).size,
+    }));
+  }, [outputs]);
+
   const note = selected?.response?.note ?? null;
   const user = note?.user ?? {};
   const authorProfileUrl = getAuthorProfileUrl(user);
@@ -1361,37 +1438,68 @@ export default function App() {
             {outputs.length === 0 ? (
               <p className="muted">No saved files found.</p>
             ) : (
-              <div className="output-list">
-                {outputs.map((item) => (
-                  <div key={item.relative_path} className="output-item">
-                    <div className="output-meta">
-                      <strong>{item.kind}</strong>
-                      <span className="output-path">{item.relative_path}</span>
+              <div className="output-group-list">
+                {outputAuthorGroups.map((group) => (
+                  <details key={group.authorKey} className="output-group">
+                    <summary className="output-group-summary">
+                      <div className="output-group-main">
+                        <strong className="output-group-title">
+                          {group.authorName}
+                        </strong>
+                        <span className="output-group-meta">
+                          {group.noteCount} notes · {group.items.length} files
+                        </span>
+                      </div>
+                    </summary>
+                    <div className="output-list output-group-items">
+                      {group.items.map((entry) => {
+                        const item = entry.source;
+                        return (
+                          <div key={item.relative_path} className="output-item">
+                            <div className="output-meta">
+                              <div className="output-meta-top">
+                                <strong>{entry.noteTitle}</strong>
+                                <span className="output-kind">{item.kind}</span>
+                              </div>
+                              <span className="output-note-sub">
+                                Note ID: {entry.noteId || "-"}
+                              </span>
+                              <span className="output-path">{item.relative_path}</span>
+                            </div>
+                            <div className="output-actions">
+                              <span>{Math.round(item.size / 1024)} KB</span>
+                              <button
+                                type="button"
+                                className="item-button"
+                                onClick={() => handleLoadSavedOutput(item)}
+                                disabled={Boolean(loadingOutput)}
+                                title="Load to viewer"
+                                aria-label="Load to viewer"
+                              >
+                                {loadingOutput === item.relative_path
+                                  ? "Loading..."
+                                  : "Load"}
+                              </button>
+                              <button
+                                type="button"
+                                className="item-button danger"
+                                onClick={() =>
+                                  handleDeleteSavedOutput(item.relative_path)
+                                }
+                                disabled={Boolean(deletingOutput)}
+                                title="Delete saved file"
+                                aria-label="Delete saved file"
+                              >
+                                {deletingOutput === item.relative_path
+                                  ? "Deleting..."
+                                  : "Delete"}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                    <div className="output-actions">
-                      <span>{Math.round(item.size / 1024)} KB</span>
-                      <button
-                        type="button"
-                        className="item-button"
-                        onClick={() => handleLoadSavedOutput(item)}
-                        disabled={Boolean(loadingOutput)}
-                        title="Load to viewer"
-                        aria-label="Load to viewer"
-                      >
-                        {loadingOutput === item.relative_path ? "Loading..." : "Load"}
-                      </button>
-                      <button
-                        type="button"
-                        className="item-button danger"
-                        onClick={() => handleDeleteSavedOutput(item.relative_path)}
-                        disabled={Boolean(deletingOutput)}
-                        title="Delete saved file"
-                        aria-label="Delete saved file"
-                      >
-                        {deletingOutput === item.relative_path ? "Deleting..." : "Delete"}
-                      </button>
-                    </div>
-                  </div>
+                  </details>
                 ))}
               </div>
             )}
