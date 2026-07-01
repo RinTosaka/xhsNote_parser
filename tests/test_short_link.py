@@ -88,3 +88,30 @@ def test_parse_note_supports_xhslink_short_link_share_text() -> None:
     assert result["noteId"] == "note123"
     assert result["noteUrl"] == resolved_url
     assert result["inputUrl"] == share_text
+
+
+def test_parse_note_reports_xhs_access_block_page() -> None:
+    url = "https://www.xiaohongshu.com/explore/note123"
+    blocked = FakeResponse(
+        url=(
+            "https://www.xiaohongshu.com/website-login/error"
+            "?error_code=300011&error_msg=账号异常"
+        ),
+        text="<html>账号异常，请稍后重试</html>",
+    )
+    session = FakeSession({url: blocked})
+
+    try:
+        parse_note(url, output_path=None, session=session)  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        assert "登录或风控错误页" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected RuntimeError")
+
+
+def test_default_headers_use_realistic_chrome_user_agent() -> None:
+    from xhsnote_parser.http_client import DEFAULT_HEADERS
+
+    assert "Chrome/000000000" not in DEFAULT_HEADERS["User-Agent"]
+    assert "Chrome/" in DEFAULT_HEADERS["User-Agent"]
+    assert DEFAULT_HEADERS["Referer"] == "https://www.xiaohongshu.com/"

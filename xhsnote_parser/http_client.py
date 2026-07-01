@@ -16,8 +16,15 @@ _XHS_NOTE_URL_HINT = re.compile(
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/000000000 Safari/537.36"
-    )
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Referer": "https://www.xiaohongshu.com/",
 }
 DEFAULT_TIMEOUT = 15
 
@@ -94,6 +101,32 @@ def _has_initial_state(html: str) -> bool:
     return "window.__INITIAL_STATE__" in (html or "")
 
 
+def _is_xhs_access_blocked(response: requests.Response, html: str) -> bool:
+    url = getattr(response, "url", "") or ""
+    if "/website-login/error" in url:
+        return True
+    if not html:
+        return False
+    blocked_markers = (
+        "error_code=300011",
+        "账号异常",
+        "请稍后重试",
+        "verifyMsg",
+        "website-login/error",
+    )
+    return any(marker in html for marker in blocked_markers)
+
+
+def _raise_if_xhs_access_blocked(response: requests.Response, html: str) -> None:
+    if not _is_xhs_access_blocked(response, html):
+        return
+    logger.error("小红书返回登录/风控错误页: %s", getattr(response, "url", ""))
+    raise RuntimeError(
+        "小红书返回登录或风控错误页，无法获取笔记 HTML；"
+        "请在浏览器确认账号状态，或通过 --user-agent/headers/Cookie 使用有效登录态后重试"
+    )
+
+
 def fetch_note_page_with_final_url(
     url: str,
     *,
@@ -119,6 +152,7 @@ def fetch_note_page_with_final_url(
         )
         response.raise_for_status()
         html = response.text
+        _raise_if_xhs_access_blocked(response, html)
 
         resolved_url = _extract_best_note_url(response, normalized_url)
         if not _has_initial_state(html) and resolved_url and resolved_url != response.url:
@@ -131,6 +165,7 @@ def fetch_note_page_with_final_url(
             )
             refetched.raise_for_status()
             html = refetched.text
+            _raise_if_xhs_access_blocked(refetched, html)
             resolved_url = refetched.url or resolved_url
 
         logger.info(

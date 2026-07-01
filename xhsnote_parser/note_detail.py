@@ -8,8 +8,89 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 _INITIAL_STATE_PATTERN = re.compile(
-    r"<script>window.__INITIAL_STATE__=(.*?)</script>", re.DOTALL
+    r"window\.__INITIAL_STATE__\s*=", re.DOTALL
 )
+
+
+def _replace_undefined_outside_strings(raw_value: str) -> str:
+    result: List[str] = []
+    index = 0
+    in_string: Optional[str] = None
+    escaped = False
+
+    while index < len(raw_value):
+        char = raw_value[index]
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            index += 1
+            continue
+
+        if char in {'"', "'"}:
+            in_string = char
+            result.append(char)
+            index += 1
+            continue
+
+        if raw_value.startswith("undefined", index):
+            before = raw_value[index - 1] if index > 0 else ""
+            after_index = index + len("undefined")
+            after = raw_value[after_index] if after_index < len(raw_value) else ""
+            if not (before.isalnum() or before == "_") and not (
+                after.isalnum() or after == "_"
+            ):
+                result.append("null")
+                index = after_index
+                continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
+
+
+def _extract_balanced_js_value(source: str, start: int) -> str:
+    while start < len(source) and source[start].isspace():
+        start += 1
+    if start >= len(source) or source[start] not in "{[":
+        raise ValueError("window.__INITIAL_STATE__ 后未找到 JSON 对象")
+
+    stack: List[str] = []
+    in_string: Optional[str] = None
+    escaped = False
+
+    for index in range(start, len(source)):
+        char = source[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            continue
+
+        if char in {'"', "'"}:
+            in_string = char
+            continue
+
+        if char in "{[":
+            stack.append("}" if char == "{" else "]")
+            continue
+
+        if char in "}]":
+            if not stack or char != stack[-1]:
+                raise ValueError("window.__INITIAL_STATE__ JSON 括号不匹配")
+            stack.pop()
+            if not stack:
+                return source[start : index + 1]
+
+    raise ValueError("window.__INITIAL_STATE__ JSON 未闭合")
 
 
 def extract_note_data(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -18,7 +99,12 @@ def extract_note_data(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if not match:
         logger.error("未在页面中找到 window.__INITIAL_STATE__ 脚本块")
         raise ValueError("页面结构不符合预期，无法解析 note 数据")
-    raw_json = match.group(1).replace("undefined", "null")
+    try:
+        raw_json = _extract_balanced_js_value(html, match.end())
+    except ValueError as exc:
+        logger.error("截取 window.__INITIAL_STATE__ 失败: %s", exc)
+        raise ValueError("页面结构不符合预期，无法解析 note 数据") from exc
+    raw_json = _replace_undefined_outside_strings(raw_json)
     logger.debug("成功截取 __INITIAL_STATE__ JSON 字段，长度 %d", len(raw_json))
     full_state = json.loads(raw_json)
     note_section = full_state.get("note", {})
