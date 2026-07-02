@@ -109,6 +109,24 @@ def test_parse_note_reports_xhs_access_block_page() -> None:
         raise AssertionError("expected RuntimeError")
 
 
+def test_parse_note_reports_xhs_note_temporarily_unavailable_page() -> None:
+    url = "https://www.xiaohongshu.com/explore/note123"
+    blocked = FakeResponse(
+        url=(
+            "https://www.xiaohongshu.com/404?source=/404/sec_ggcrQvZz"
+            "&error_code=300031&error_msg=当前笔记暂时无法浏览"
+        ),
+        text="<html>当前笔记暂时无法浏览<script>window.__INITIAL_STATE__={}</script></html>",
+    )
+    session = FakeSession({url: blocked})
+
+    try:
+        parse_note(url, output_path=None, session=session)  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        assert "登录或风控错误页" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected RuntimeError")
+
 def test_default_headers_use_realistic_chrome_user_agent() -> None:
     from xhsnote_parser.http_client import DEFAULT_HEADERS
 

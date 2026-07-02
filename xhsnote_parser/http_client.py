@@ -103,17 +103,20 @@ def _has_initial_state(html: str) -> bool:
 
 def _is_xhs_access_blocked(response: requests.Response, html: str) -> bool:
     url = getattr(response, "url", "") or ""
-    if "/website-login/error" in url:
-        return True
-    if not html:
-        return False
     blocked_markers = (
         "error_code=300011",
+        "error_code=300031",
         "账号异常",
+        "当前笔记暂时无法浏览",
         "请稍后重试",
         "verifyMsg",
         "website-login/error",
+        "sec_ggcr",
     )
+    if "/website-login/error" in url or any(marker in url for marker in blocked_markers):
+        return True
+    if not html:
+        return False
     return any(marker in html for marker in blocked_markers)
 
 

@@ -111,6 +111,35 @@ def extract_note_data(html: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return note_section, full_state
 
 
+def _looks_like_note(note: Dict[str, Any]) -> bool:
+    return any(
+        key in note
+        for key in (
+            "noteId",
+            "note_id",
+            "id",
+            "title",
+            "desc",
+            "imageList",
+            "user",
+        )
+    )
+
+
+def _extract_note_from_map_entry(entry: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(entry, dict):
+        return None
+
+    note = entry.get("note")
+    if isinstance(note, dict) and note:
+        return dict(note)
+
+    if _looks_like_note(entry):
+        return dict(entry)
+
+    return None
+
+
 def build_note_stub_from_initial_state(initial_state: Dict[str, Any]) -> Dict[str, Any]:
     """Best-effort build a minimal note_detail-like dict from window.__INITIAL_STATE__.
 
@@ -127,16 +156,14 @@ def build_note_stub_from_initial_state(initial_state: Dict[str, Any]) -> Dict[st
         return {}
 
     for entry in note_detail_map.values():
-        if not isinstance(entry, dict):
-            continue
-        note = entry.get("note")
-        if not isinstance(note, dict) or not note:
+        note = _extract_note_from_map_entry(entry)
+        if not note:
             continue
 
         stub: Dict[str, Any] = {}
         if "title" in note:
             stub["title"] = note.get("title")
-        note_id = note.get("noteId") or note.get("id")
+        note_id = note.get("noteId") or note.get("note_id") or note.get("id")
         if note_id:
             stub["noteId"] = note_id
         user = note.get("user")
@@ -148,13 +175,17 @@ def build_note_stub_from_initial_state(initial_state: Dict[str, Any]) -> Dict[st
 
 
 def _safe_first_note(note_detail_map: Dict[str, Any]) -> Dict[str, Any]:
+    if not note_detail_map:
+        logger.error("noteDetailMap 为空，页面未返回笔记详情")
+        raise ValueError("页面未返回笔记详情，可能是笔记暂时无法浏览或触发了小红书风控")
+
     for entry in note_detail_map.values():
-        note = entry.get("note")
+        note = _extract_note_from_map_entry(entry)
         if note:
             logger.debug("命中 noteDetailMap 中的第一条笔记数据")
-            return dict(note)
-    logger.error("noteDetailMap 中未找到 note 字段")
-    raise ValueError("noteDetailMap 不包含 note 信息")
+            return note
+    logger.error("noteDetailMap 中未找到可识别的笔记数据")
+    raise ValueError("noteDetailMap 不包含可识别的笔记信息")
 
 
 def _format_timestamp(ms_value: Optional[int]) -> Optional[str]:
